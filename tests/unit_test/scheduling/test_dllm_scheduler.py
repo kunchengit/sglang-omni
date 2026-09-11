@@ -2,14 +2,22 @@
 from __future__ import annotations
 
 from array import array
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+import torch
 from sglang.srt.managers.schedule_batch import ReqKvInfo
+from sglang.srt.model_executor.cuda_graph_buffer_registry import (
+    CudaGraphBufferRegistry,
+    GraphSlot,
+)
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
+from sglang.srt.model_executor.runner.eager_runner import EagerRunner
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.scheduling import dllm_scheduler as dllm_scheduler_module
-from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
+from sglang_omni.scheduling.dllm_scheduler import DllmForwardBatch, DllmScheduler
 
 
 class _ReqDouble:
@@ -43,6 +51,11 @@ def _scheduler(*, fdfo: bool, block_size: int = 4) -> DllmScheduler:
         block_size=block_size,
     )
     scheduler._rid_to_req_data = {}
+    scheduler._cond_to_unconds = {}
+    scheduler._uncond_to_cond = {}
+    scheduler._uncond_rids = set()
+    scheduler._orphaned_uncond_rids = set()
+    scheduler._waiting_queue = []
     scheduler._result_adapter = lambda value: value
     scheduler.outbox = SimpleNamespace(put=lambda value: None)
     return scheduler
@@ -117,7 +130,8 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduler = object.__new__(DllmScheduler)
-    batch = SimpleNamespace(output_ids=None)
+    batch = SimpleNamespace(output_ids=None, reqs=[])
+    forward_batch = SimpleNamespace()
     forwarded = []
 
     scheduler._running = True
@@ -143,13 +157,76 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
     )
     monkeypatch.setattr(
         dllm_scheduler_module,
-        "ForwardBatch",
-        SimpleNamespace(init_new=lambda *args, **kwargs: "forward-batch"),
+        "DllmForwardBatch",
+        SimpleNamespace(init_new=lambda *args, **kwargs: forward_batch),
     )
 
     scheduler._event_loop()
 
-    assert forwarded == [("forward-batch", batch)]
+    assert forwarded == [(forward_batch, batch)]
+    assert forward_batch.reqs == batch.reqs
+
+
+@pytest.mark.parametrize("pad_lens", [None, [0, 2], [0, 1, 3]])
+@pytest.mark.parametrize("path", ["replace", "registry", "eager", "eager_no_copy"])
+def test_dllm_metadata_survives_real_eager_batch_rebuilds(
+    monkeypatch: pytest.MonkeyPatch, pad_lens, path
+) -> None:
+    bs = len(pad_lens) if pad_lens is not None else 1
+    reqs = [SimpleNamespace(rid=f"req-{i}") for i in range(bs)]
+    left_pad_lens = torch.tensor(pad_lens) if pad_lens is not None else None
+    batch = DllmForwardBatch(
+        forward_mode=ForwardMode.DLLM_EXTEND,
+        batch_size=bs,
+        input_ids=torch.arange(bs * 4),
+        req_pool_indices=torch.arange(bs),
+        seq_lens=torch.full((bs,), 4),
+        out_cache_loc=torch.arange(bs * 4),
+        seq_lens_sum=bs * 4,
+        reqs=reqs,
+        dllm_left_pad_lens=left_pad_lens,
+    )
+    assert DllmForwardBatch.init_new.__func__ is ForwardBatch.init_new.__func__
+    assert DllmForwardBatch.init_new.__self__ is DllmForwardBatch
+
+    registry = CudaGraphBufferRegistry(
+        device=torch.device("cpu"), max_bs=bs, max_num_tokens=bs * 4
+    )
+    registry.register_slot(
+        GraphSlot(name="input_ids", shape_fn=lambda b, t: (t,), dtype=torch.int64)
+    )
+    if path == "replace":
+        rebuilt = replace(batch)
+    elif path == "registry":
+        registry.fill_from(
+            batch,
+            raw_bs=bs,
+            padded_bs=bs,
+            raw_num_tokens=bs * 4,
+            padded_num_tokens=bs * 4,
+        )
+        rebuilt = registry.extract_buffer(
+            padded_bs=bs, padded_num_tokens=bs * 4, forward_batch_template=batch
+        )
+    else:
+        monkeypatch.setenv(
+            "SGLANG_EAGER_INPUT_NO_COPY", "1" if path == "eager_no_copy" else "0"
+        )
+        runner = object.__new__(EagerRunner)
+        runner._eager_registry = registry
+        rebuilt = runner.load_batch(batch)
+
+    assert type(rebuilt) is DllmForwardBatch
+    assert rebuilt is not batch
+    assert rebuilt.reqs is reqs
+    assert rebuilt.dllm_left_pad_lens is left_pad_lens
+    assert torch.equal(rebuilt.input_ids, batch.input_ids)
+    if path in ("registry", "eager"):
+        assert (
+            rebuilt.input_ids.data_ptr()
+            == registry.get_slot("input_ids").buffer.data_ptr()
+        )
+        assert rebuilt.input_ids.data_ptr() != batch.input_ids.data_ptr()
 
 
 def test_dllm_staging_admission_uses_dllm_config(
@@ -167,6 +244,7 @@ def test_dllm_staging_admission_uses_dllm_config(
     req = SimpleNamespace(
         rid="req",
         inflight_middle_chunks=0,
+        kv=ReqKvInfo(),
         init_next_round_input=lambda: None,
     )
     scheduler._staging_queue = [req]

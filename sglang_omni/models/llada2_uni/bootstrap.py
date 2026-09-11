@@ -8,6 +8,60 @@ from typing import Any
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 
+def register_llada2_uni_cfg() -> None:
+    """Call before build_server_args for the omni LowConfidenceCFG variant.
+
+    The text-only LowConfidence variant does not need this registration.
+    """
+    from sglang.srt.dllm.algorithm import algo_name_to_cls
+
+    from sglang_omni.models.llada2_uni.algorithm.low_confidence_cfg import (
+        LowConfidenceCFG,
+    )
+    from sglang_omni.models.llada2_uni.cfg_attention_backend import (
+        register_llada2_cfg_flashinfer_backend,
+    )
+
+    algo_name_to_cls["LowConfidenceCFG"] = LowConfidenceCFG
+    register_llada2_cfg_flashinfer_backend()
+
+
+def _validate_cfg_eager(server_args: Any) -> None:
+    from sglang.srt.arg_groups.model_override_base import (
+        attention_backends_of,
+        resolved_view,
+    )
+    from sglang.srt.model_executor.cuda_graph_config import Backend
+
+    cfg = resolved_view(server_args)
+    if cfg.dllm_algorithm != "LowConfidenceCFG":
+        return
+
+    register_llada2_uni_cfg()
+    from sglang_omni.models.llada2_uni.cfg_attention_backend import (
+        CFG_ATTENTION_BACKEND,
+    )
+
+    if any(backend != CFG_ATTENTION_BACKEND for backend in attention_backends_of(cfg)):
+        raise ValueError(
+            "LowConfidenceCFG requires llada2_uni_cfg_flashinfer (DLLM pad masking), "
+            "not the upstream llada2_cfg_flashinfer text-condition mask backend"
+        )
+    if cfg.dllm_fdfo:
+        raise ValueError("LowConfidenceCFG requires synchronous DLLM, not FDFO")
+
+    # PR11 must carry branch/pad/position metadata through capture and replay.
+    # The omni factory defaults to eager; explicit graph requests must fail.
+    if any(
+        phase.backend != Backend.DISABLED
+        for phase in (cfg.cuda_graph_config.decode, cfg.cuda_graph_config.prefill)
+    ):
+        raise ValueError(
+            "DLLM CFG currently supports eager execution only. "
+            "Set cuda_graph_backend_decode and cuda_graph_backend_prefill to disabled."
+        )
+
+
 def create_dllm_thinker_scheduler(
     server_args: Any,
     gpu_id: int = 0,
@@ -29,6 +83,7 @@ def create_dllm_thinker_scheduler(
     from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
     from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
 
+    _validate_cfg_eager(server_args)
     dllm_config = DllmConfig.from_server_args(server_args)
 
     # sglang supports radix cache with dLLM, but Omni's dLLM staging
