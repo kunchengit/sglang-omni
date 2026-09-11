@@ -91,6 +91,10 @@ def create_sglang_dllm_thinker_executor_from_config(
     dllm_algorithm: str = "LowConfidence",
     dllm_algorithm_config: str | None = None,
     server_args_overrides: dict[str, Any] | None = None,
+    tp_size: int = 1,
+    tp_rank: int = 0,
+    nccl_port: int | None = None,
+    total_gpu_memory_fraction: float | None = None,
 ):
     """Create an DllmScheduler for the LLaDA2-Uni thinker."""
     from sglang_omni.models.llada2_uni.bootstrap import create_dllm_thinker_scheduler
@@ -117,6 +121,11 @@ def create_sglang_dllm_thinker_executor_from_config(
         register_llada2_uni_cfg()
         overrides["attention_backend"] = CFG_ATTENTION_BACKEND
     overrides.update(server_args_overrides or {})
+    if tp_size < 1 or not 0 <= tp_rank < tp_size:
+        raise ValueError("thinker requires tp_size >= 1 and 0 <= tp_rank < tp_size")
+    if "tp_size" in overrides and overrides["tp_size"] != tp_size:
+        raise ValueError("thinker tp_size must match the stage TP topology")
+    overrides["tp_size"] = tp_size
     pin_resolved_device_type(overrides, concrete_device.type)
 
     server_args = build_sglang_server_args(
@@ -135,7 +144,13 @@ def create_sglang_dllm_thinker_executor_from_config(
         cfg.dllm_algorithm,
         cfg.mem_fraction_static,
     )
-    return create_dllm_thinker_scheduler(server_args, resolved_gpu_id)
+    return create_dllm_thinker_scheduler(
+        server_args,
+        resolved_gpu_id,
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
+        total_gpu_memory_fraction=total_gpu_memory_fraction,
+    )
 
 
 def create_decode_executor(model_path: str):

@@ -135,6 +135,7 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
     forwarded = []
 
     scheduler._running = True
+    scheduler.tp_size = 1
     scheduler._drain_and_purge = lambda: None
     scheduler._schedule_next_batch = lambda: batch
     scheduler._apply_results = lambda *_: None

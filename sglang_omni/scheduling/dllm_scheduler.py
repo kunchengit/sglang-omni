@@ -22,7 +22,7 @@ from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-from sglang.srt.runtime_context import get_schedule
+from sglang.srt.runtime_context import get_parallel, get_schedule
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.base import resolve_deferred_prefill_inputs
@@ -71,6 +71,11 @@ class DllmScheduler:
         self._result_adapter = result_adapter
 
         self.tp_worker = tp_worker
+        self.tp_rank = tp_worker.tp_rank
+        self.tp_size = get_parallel().tp_size
+        # Like OmniScheduler, broadcast inputs at scheduler iteration boundaries.
+        self.requires_tp_work_fanout = False
+        self.tp_group = tp_worker.get_tp_group() if self.tp_size > 1 else None
         self.tree_cache = tree_cache
         self.req_to_token_pool = req_to_token_pool
         self.token_to_kv_pool_allocator = token_to_kv_pool_allocator
@@ -109,8 +114,10 @@ class DllmScheduler:
             self._aborted_request_ids.add(request_id)
 
     def _event_loop(self) -> None:
-        while self._running:
+        while self._running or self.tp_size > 1:
             self._drain_and_purge()
+            if not self._running:
+                break
             batch = self._schedule_next_batch()
 
             if batch is None:
@@ -133,10 +140,31 @@ class DllmScheduler:
             self._apply_results(batch, batch_result)
             self._post_step(batch)
 
-    def _drain_and_purge(self) -> None:
+    def _recv_scheduler_inputs(self):
+        messages = []
         with self._abort_lock:
             aborted = self._aborted_request_ids
             self._aborted_request_ids = set()
+        if self.tp_rank == 0:
+            while True:
+                try:
+                    messages.append(self.inbox.get_nowait())
+                except _queue_mod.Empty:
+                    break
+        if self.tp_size > 1:
+            from sglang.srt.utils import broadcast_pyobj
+
+            running, messages, aborted = broadcast_pyobj(
+                [self._running, messages, aborted],
+                self.tp_group.rank,
+                self.tp_group.cpu_group,
+                src=self.tp_group.ranks[0],
+            )
+            self._running = running
+        return messages, aborted
+
+    def _drain_and_purge(self) -> None:
+        messages, aborted = self._recv_scheduler_inputs()
         # Aborting any member of a CFG group must purge the whole group.
         aborted_groups: set[str] = set()
         for rid in aborted:
@@ -145,12 +173,7 @@ class DllmScheduler:
             aborted_groups.update(self._cond_to_unconds.get(cond_rid, ()))
         aborted = aborted_groups
 
-        while True:
-            try:
-                msg = self.inbox.get_nowait()
-            except _queue_mod.Empty:
-                break
-
+        for msg in messages:
             if msg.request_id in aborted:
                 continue
 
@@ -437,6 +460,8 @@ class DllmScheduler:
             req.__dict__.update(state)
 
     def _schedule_next_batch(self) -> ScheduleBatch | None:
+        # Leader-broadcast iteration inputs preserve FIFO and CFG state on every
+        # rank. Admission uses fixed TP-sized pools and synchronous cache state.
         if not self._waiting_queue and not self._staging_queue:
             return None
 
@@ -482,15 +507,8 @@ class DllmScheduler:
 
         expected_rids = [req.rid for req in request_group]
         scheduled_rids = [req.rid for req in adder.can_run_list]
-        if scheduled_rids != expected_rids:
-            self._rollback_partial_admission(
-                adder.can_run_list,
-                from_staging=from_staging,
-                request_snapshots=request_snapshots,
-            )
-            return None
-
-        if len(request_group) > 1:
+        ready = scheduled_rids == expected_rids
+        if ready and len(request_group) > 1:
             self._synchronize_cfg_phases(adder.can_run_list)
             spans = {
                 (req.extend_range.start, req.extend_range.end)
@@ -500,12 +518,15 @@ class DllmScheduler:
                 req.extend_range.length != self.dllm_config.block_size
                 for req in adder.can_run_list
             ):
-                self._rollback_partial_admission(
-                    adder.can_run_list,
-                    from_staging=from_staging,
-                    request_snapshots=request_snapshots,
-                )
-                return None
+                ready = False
+
+        if not ready:
+            self._rollback_partial_admission(
+                adder.can_run_list,
+                from_staging=from_staging,
+                request_snapshots=request_snapshots,
+            )
+            return None
 
         # Reschedule the same logical request until all of its blocks finish.
         staging_rids = {r.rid for r in self._staging_queue}

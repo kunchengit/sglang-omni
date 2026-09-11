@@ -141,7 +141,11 @@ def modules(monkeypatch):
         AddReqResult=NS(CONTINUE=0, NO_TOKEN=1, OTHER=2),
     )
     stub("sglang.srt.mem_cache.common", release_kv_cache=release)
-    stub("sglang.srt.runtime_context", get_schedule=lambda: config)
+    stub(
+        "sglang.srt.runtime_context",
+        get_schedule=lambda: config,
+        get_parallel=lambda: NS(tp_size=1),
+    )
     stub("sglang.srt.speculative.spec_info", SpeculativeAlgorithm=NS(NONE=None))
     stub("sglang.srt.sampling.sampling_params", SamplingParams=SamplingParams)
     stub(
@@ -203,7 +207,7 @@ def modules(monkeypatch):
 
 def scheduler_for(modules):
     return modules.scheduler.DllmScheduler(
-        tp_worker=None,
+        tp_worker=NS(tp_rank=0),
         tree_cache=NS(dec_lock_ref=lambda *_: None),
         req_to_token_pool=None,
         token_to_kv_pool_allocator=None,
@@ -215,6 +219,211 @@ def scheduler_for(modules):
         request_builder=lambda req: NS(req=req),
         result_adapter=lambda data: data,
     )
+
+
+def test_pr4_tp_admission_inputs_follow_leader_epochs(modules, monkeypatch):
+    from copy import deepcopy
+
+    leader, follower = scheduler_for(modules), scheduler_for(modules)
+    packets = []
+
+    def broadcast(packet, rank, cpu_group, src):
+        assert src == 4 and cpu_group == "cpu"
+        if rank == 4:
+            packets.append(deepcopy(packet))
+            return packet
+        return packets.pop(0)
+
+    utils = ModuleType("sglang.srt.utils")
+    utils.broadcast_pyobj = broadcast
+    monkeypatch.setitem(sys.modules, utils.__name__, utils)
+    for rank, scheduler in enumerate((leader, follower)):
+        scheduler.tp_size, scheduler.tp_rank = 2, rank
+        scheduler.tp_group = NS(rank=rank + 4, ranks=[4, 5], cpu_group="cpu")
+        scheduler._running = True
+        assert not scheduler.requires_tp_work_fanout
+
+    def enqueue(rid, cfg_size):
+        req = ReqDouble(
+            rid,
+            sampling_params=NS(max_new_tokens=8),
+            vocab_size=16,
+            eos_token_ids=set(),
+            dllm_config=leader.dllm_config,
+        )
+        if cfg_size > 1:
+            req._uncond_input_ids = [1, 2]
+        if cfg_size > 2:
+            req._uncond_img_input_ids = [1, 2]
+        leader.inbox.put(modules.scheduler.IncomingMessage(rid, "new_request", req))
+
+    enqueue("edit-a", 3)
+    enqueue("text-b", 1)
+    leader._drain_and_purge()
+    enqueue("image-c", 2)  # Arrives after leader drain, before follower drain.
+    follower._drain_and_purge()
+    expected = ["edit-a", "edit-a-uncond", "edit-a-uncond-img", "text-b"]
+    assert [r.rid for r in leader._waiting_queue] == expected
+    assert [r.rid for r in follower._waiting_queue] == expected
+    leader.abort("edit-a-uncond")
+    leader._drain_and_purge()
+    follower._drain_and_purge()
+    for scheduler in (leader, follower):
+        assert [r.rid for r in scheduler._waiting_queue] == [
+            "text-b",
+            "image-c",
+            "image-c-uncond",
+        ]
+        assert scheduler._get_request_group(scheduler._waiting_queue)[0].rid == "text-b"
+    leader.stop()
+    leader._drain_and_purge()
+    follower._drain_and_purge()
+    assert not follower._running
+
+
+@pytest.mark.parametrize("staging", [False, True])
+def test_pr4_tp_deterministic_admission_without_collectives(
+    modules, monkeypatch, staging
+):
+    schedulers = [scheduler_for(modules), scheduler_for(modules)]
+    for rank, scheduler in enumerate(schedulers):
+        scheduler.tp_rank, scheduler.tp_size = rank, 2
+        reqs = group()
+        reqs[0].dllm_phase = "prefill"
+        track(scheduler, reqs)
+        scheduler._staging_queue = reqs if staging else []
+        scheduler._waiting_queue = (
+            [ReqDouble("next-request")]
+            if staging
+            else [*reqs, ReqDouble("next-request")]
+        )
+    limit = [2]
+
+    class Adder:
+        def __init__(self, *_a, **_k):
+            self.can_run_list = []
+
+        def add(self, req, **_):
+            self.can_run_list.append(req)
+            return 1 if len(self.can_run_list) == limit[0] else 0
+
+        add_one_req = add
+        add_dllm_staging_req = add
+
+    def no_collective(*_a, **_kw):
+        pytest.fail("deterministic DLLM admission must not add per-block collectives")
+
+    monkeypatch.setattr(torch.distributed, "all_gather_object", no_collective)
+    monkeypatch.setattr(torch.distributed, "all_reduce", no_collective)
+    monkeypatch.setattr(modules.scheduler, "PrefillAdder", Adder)
+    monkeypatch.setattr(
+        modules.scheduler,
+        "ScheduleBatch",
+        NS(init_new=lambda **kw: NS(reqs=kw["reqs"], prepare_for_extend=lambda: None)),
+    )
+    for scheduler in reversed(schedulers):
+        assert scheduler._schedule_next_batch() is None
+        queue = scheduler._staging_queue if staging else scheduler._waiting_queue
+        assert all(
+            r.dllm_block_offset == 0 and r.kv.cache_protected_len == 0 for r in queue
+        )
+    limit[0] = 3
+    batches = [scheduler._schedule_next_batch() for scheduler in schedulers]
+    for scheduler, batch in zip(schedulers, batches):
+        assert [r.rid for r in batch.reqs] == ["cond", "cond-u1", "cond-u2"]
+        assert all(r.dllm_phase == "prefill" for r in batch.reqs)
+        assert [r.rid for r in scheduler._waiting_queue] == ["next-request"]
+        assert [r.rid for r in scheduler._staging_queue] == [
+            "cond",
+            "cond-u1",
+            "cond-u2",
+        ]
+
+
+def test_pr4_tp_idle_admission_has_no_collective(modules, monkeypatch):
+    scheduler = scheduler_for(modules)
+    scheduler.tp_size = 2
+
+    def no_collective(*_a, **_kw):
+        pytest.fail("idle admission must not add a queue collective")
+
+    monkeypatch.setattr(torch.distributed, "all_gather_object", no_collective)
+    monkeypatch.setattr(torch.distributed, "all_reduce", no_collective)
+    assert scheduler._schedule_next_batch() is None
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_pr4_decode_reference_precision_and_explicit_failure(
+    modules, monkeypatch, dtype
+):
+    config = NS(
+        block_size=4, mask_id=9, first_done_first_out_mode=False, algorithm_config={}
+    )
+    algorithm = modules.algo.LowConfidenceCFG(config)
+    logits = torch.tensor([[1.0, 2.0, 3.0], [4.0, 4.0, -1.0]], dtype=dtype)
+    ids, confidence = algorithm._argmax_confidence(logits)
+    expected = (
+        logits.softmax(-1).gather(-1, logits.argmax(-1, keepdim=True)).squeeze(-1)
+    )
+    torch.testing.assert_close(confidence, expected, rtol=0, atol=0)
+    assert confidence.dtype == dtype and ids.tolist() == [2, 0]
+    kernel = ModuleType("sglang_omni.models.llada2_uni.algorithm.triton_decode")
+
+    def fail(_):
+        raise RuntimeError("kernel launch failed")
+
+    kernel.argmax_confidence_triton = fail
+    monkeypatch.setitem(sys.modules, kernel.__name__, kernel)
+    algorithm.decode_backend = "triton"
+    with pytest.raises(RuntimeError, match="kernel launch failed"):
+        algorithm._argmax_confidence(logits)
+    config.algorithm_config = {"decode_backend": "automatic"}
+    with pytest.raises(ValueError, match="decode_backend"):
+        modules.algo.LowConfidenceCFG(config)
+
+
+def test_pr4_bootstrap_forwards_tp_and_total_memory_budget(modules, monkeypatch):
+    captured = {}
+
+    class ReachedInfrastructure(Exception):
+        pass
+
+    def infrastructure(args, gpu, **kwargs):
+        captured.update(args=args, gpu=gpu, **kwargs)
+        raise ReachedInfrastructure
+
+    def stub(name, **attrs):
+        module = ModuleType(name)
+        module.__dict__.update(attrs)
+        monkeypatch.setitem(sys.modules, name, module)
+
+    stub("sglang.srt.dllm.config", DllmConfig=NS(from_server_args=lambda _: object()))
+    stub("sglang.srt.utils.hf_transformers_utils", get_tokenizer=lambda *_: None)
+    stub(
+        "sglang_omni.models.llada2_uni.request_builders",
+        make_dllm_thinker_scheduler_adapters=object(),
+    )
+    stub(
+        "sglang_omni.scheduling.bootstrap", create_sglang_infrastructure=infrastructure
+    )
+    stub("sglang_omni.scheduling.dllm_scheduler", DllmScheduler=object())
+    monkeypatch.setattr(modules.bootstrap, "_validate_cfg_eager", lambda _: None)
+    monkeypatch.setattr(
+        modules.bootstrap, "override_server_args", lambda *_a, **_kw: None
+    )
+    args = object()
+    with pytest.raises(ReachedInfrastructure):
+        modules.bootstrap.create_dllm_thinker_scheduler(
+            args, 3, tp_rank=2, nccl_port=29000, total_gpu_memory_fraction=0.7
+        )
+    assert captured == {
+        "args": args,
+        "gpu": 3,
+        "tp_rank": 2,
+        "nccl_port": 29000,
+        "total_gpu_memory_fraction": 0.7,
+        "model_arch_override": "LLaDA2MoeModelLM",
+    }
 
 
 def group(size=3, prompt=None):
@@ -236,12 +445,30 @@ def track(scheduler, reqs):
 
 @pytest.mark.parametrize("size", [1, 2, 3])
 @pytest.mark.parametrize("rescale", [0.0, 0.7])
-def test_guidance_and_five_field_contract(modules, size, rescale):
+@pytest.mark.parametrize("decode_backend", ["torch", "triton"])
+def test_guidance_and_five_field_contract(
+    modules, monkeypatch, size, rescale, decode_backend
+):
+    kernel_calls = []
+    if decode_backend == "triton":
+        kernel = ModuleType("sglang_omni.models.llada2_uni.algorithm.triton_decode")
+
+        def primitive(logits):
+            kernel_calls.append(logits.clone())
+            ids = logits.argmax(-1)
+            return ids, logits.softmax(-1).gather(-1, ids[:, None]).squeeze(-1)
+
+        kernel.argmax_confidence_triton = primitive
+        monkeypatch.setitem(sys.modules, kernel.__name__, kernel)
     config = NS(
         block_size=4,
         mask_id=9,
         first_done_first_out_mode=False,
-        algorithm_config={"threshold": 1.0, "image_token_offset": 3},
+        algorithm_config={
+            "threshold": 1.0,
+            "image_token_offset": 3,
+            "decode_backend": decode_backend,
+        },
     )
     algorithm = modules.algo.LowConfidenceCFG(config)
     reqs = group(size)
@@ -287,6 +514,9 @@ def test_guidance_and_five_field_contract(modules, size, rescale):
     assert all(row.tolist() == [expected.argmax().item()] * 3 for row in result[1])
     assert all(not (row == 9).any() for row in result[1])
     assert len(calls) >= 2
+    if decode_backend == "triton":
+        assert kernel_calls
+        assert all(torch.isneginf(logits[:, :3]).all() for logits in kernel_calls)
     if size > 1:
         assert ids[4].item() == 9
 

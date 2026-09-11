@@ -13,7 +13,10 @@ from transformers import PretrainedConfig
 
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import get_tensor_model_parallel_world_size
+from sglang_omni.vendor.sglang.distributed import (
+    get_tensor_model_parallel_world_size,
+    tensor_model_parallel_all_reduce,
+)
 from sglang_omni.vendor.sglang.layers import (
     AttentionType,
     MergedColumnParallelLinear,
@@ -104,6 +107,7 @@ class LLaDA2MoeAttention(nn.Module):
             self.num_kv_heads_per_tp,
             layer_id=layer_id,
             attn_type=AttentionType.ENCODER_ONLY,
+            quant_config=quant_config,
         )
 
     def forward(
@@ -166,6 +170,8 @@ class LLaDA2MoeMLP(nn.Module):
         config: PretrainedConfig,
         intermediate_size: int,
         quant_config: Optional[QuantizationConfig] = None,
+        *,
+        reduce_results: bool = True,
     ):
         super().__init__()
         self.gate_up_proj = MergedColumnParallelLinear(
@@ -179,6 +185,7 @@ class LLaDA2MoeMLP(nn.Module):
             config.hidden_size,
             bias=False,
             quant_config=quant_config,
+            reduce_results=reduce_results,
         )
         self.act_fn = SiluAndMul()
 
@@ -221,15 +228,24 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         config: PretrainedConfig,
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
+        *,
+        alt_stream: torch.cuda.Stream | None = None,
     ):
         super().__init__()
         self.config = config
+        self.alt_stream = alt_stream
         self.layer_id = layer_id
         self.num_experts = config.num_experts
         self.num_experts_per_tok = config.num_experts_per_tok
         self.n_group = config.n_group
         self.topk_group = config.topk_group
         self.routed_scaling_factor = config.routed_scaling_factor
+        self.tp_size = get_tensor_model_parallel_world_size()
+        self.router_topk_backend = getattr(
+            config, "llada2_router_topk_backend", "torch"
+        )
+        if self.router_topk_backend not in ("torch", "triton"):
+            raise ValueError("llada2_router_topk_backend must be 'torch' or 'triton'")
 
         # Gate always runs at half / full precision for now.
         router_dtype = getattr(config, "router_dtype", None)
@@ -263,7 +279,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
                 config.moe_intermediate_size * config.num_shared_experts
             )
             self.shared_experts = LLaDA2MoeMLP(
-                config, shared_intermediate, quant_config
+                config, shared_intermediate, quant_config, reduce_results=False
             )
         else:
             self.shared_experts = None
@@ -274,6 +290,20 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         identity = (
             hidden_states.clone() if self.shared_experts is not None else hidden_states
         )
+
+        shared_output = None
+        if (
+            self.alt_stream is not None
+            and self.shared_experts is not None
+            and hidden_states.shape[0] > 0
+        ):
+            from sglang.srt.model_executor.runner import get_is_capture_mode
+
+            if get_is_capture_mode():
+                # Fork after the clone and join before addition/allreduce.
+                self.alt_stream.wait_stream(torch.cuda.current_stream())
+                with torch.cuda.stream(self.alt_stream):
+                    shared_output = self.shared_experts(identity)
 
         # Router scores via sigmoid (not softmax like standard MoE)
         router_logits = self.gate(hidden_states)
@@ -307,15 +337,30 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         y = self.experts(hidden_states, topk_output)
 
         # Add shared expert output
-        if self.shared_experts is not None:
+        if shared_output is not None:
+            torch.cuda.current_stream().wait_stream(self.alt_stream)
+            y = y + shared_output
+        elif self.shared_experts is not None:
             y = y + self.shared_experts(identity)
 
+        # Both expert paths produce rank-local partials. Preserve their dtype.
+        if self.tp_size > 1:
+            y = tensor_model_parallel_all_reduce(y)
         return y
 
     def _group_limited_topk(
         self, scores: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Group-limited top-k expert selection."""
+        if self.router_topk_backend == "triton":
+            from sglang_omni.models.llada2_uni.components.triton_topk import (
+                grouped_topk_triton,
+            )
+
+            return grouped_topk_triton(
+                scores, self.num_experts_per_tok, self.n_group, self.topk_group
+            )
+
         num_tokens = scores.shape[0]
         experts_per_group = self.num_experts // self.n_group
 
@@ -355,6 +400,8 @@ class LLaDA2MoeBlock(nn.Module):
         config: PretrainedConfig,
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
+        *,
+        alt_stream: torch.cuda.Stream | None = None,
     ):
         super().__init__()
         self.layer_id = layer_id
@@ -372,7 +419,9 @@ class LLaDA2MoeBlock(nn.Module):
         if self.is_dense:
             self.mlp = LLaDA2MoeMLP(config, config.intermediate_size, quant_config)
         else:
-            self.mlp = LLaDA2MoeSparseMoeBlock(config, layer_id, quant_config)
+            self.mlp = LLaDA2MoeSparseMoeBlock(
+                config, layer_id, quant_config, alt_stream=alt_stream
+            )
 
     def forward(
         self,
@@ -406,12 +455,22 @@ class LLaDA2MoeTextModel(nn.Module):
     ):
         super().__init__()
         self.config = config
+        overlap = getattr(config, "llada2_shared_expert_overlap", "off")
+        if overlap not in ("off", "cuda_graph"):
+            raise ValueError(
+                "llada2_shared_expert_overlap must be 'off' or 'cuda_graph'"
+            )
+        if overlap == "cuda_graph" and not torch.cuda.is_available():
+            raise ValueError("cuda_graph shared-expert overlap requires CUDA")
+        self.alt_stream = torch.cuda.Stream() if overlap == "cuda_graph" else None
         self.word_embeddings = VocabParallelEmbedding(
-            config.vocab_size, config.hidden_size
+            config.vocab_size, config.hidden_size, quant_config=quant_config
         )
         self.layers = make_layers(
             config.num_hidden_layers,
-            lambda idx, prefix="": LLaDA2MoeBlock(config, idx, quant_config),
+            lambda idx, prefix="": LLaDA2MoeBlock(
+                config, idx, quant_config, alt_stream=self.alt_stream
+            ),
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 

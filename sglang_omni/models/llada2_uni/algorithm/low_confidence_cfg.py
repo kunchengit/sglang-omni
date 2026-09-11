@@ -63,9 +63,23 @@ class LowConfidenceCFG(DllmAlgorithm):
         if self.fdfo:
             raise ValueError("LowConfidenceCFG requires synchronous DLLM, not FDFO")
         self.threshold = config.algorithm_config.get("threshold", 0.95)
+        self.decode_backend = config.algorithm_config.get("decode_backend", "torch")
+        if self.decode_backend not in ("torch", "triton"):
+            raise ValueError("decode_backend must be 'torch' or 'triton'")
         self.image_token_offset = config.algorithm_config.get(
             "image_token_offset", 157184
         )
+
+    def _argmax_confidence(self, logits):
+        if self.decode_backend == "triton":
+            from sglang_omni.models.llada2_uni.algorithm.triton_decode import (
+                argmax_confidence_triton,
+            )
+
+            return argmax_confidence_triton(logits)
+        ids = torch.argmax(logits, dim=-1)
+        confidence = F.softmax(logits, dim=-1).gather(-1, ids.unsqueeze(-1))
+        return ids, confidence.squeeze(-1)
 
     # ------------------------------------------------------------------
     # Standard (no-CFG) run from the original image-generation algorithm.
@@ -118,10 +132,7 @@ class LowConfidenceCFG(DllmAlgorithm):
                 logits = logits_output.full_logits[cs:ce]
                 if force_image_only:
                     logits[:, : self.image_token_offset] = float("-inf")
-                x = torch.argmax(logits, dim=-1)
-                p = torch.gather(
-                    F.softmax(logits, dim=-1), dim=-1, index=x.unsqueeze(-1)
-                ).squeeze(-1)
+                x, p = self._argmax_confidence(logits)
                 x = torch.where(blk_mask, x, blk_ids)
                 conf = torch.where(blk_mask, p, -np.inf)
                 high_conf = conf > self.threshold
@@ -225,10 +236,7 @@ class LowConfidenceCFG(DllmAlgorithm):
 
             # Confidence-based unmasking with the fixed transfer schedule.
             blk_ids = forward_batch.input_ids[cs:ce]
-            x = torch.argmax(guided, dim=-1)
-            p = torch.gather(
-                F.softmax(guided, dim=-1), dim=-1, index=x.unsqueeze(-1)
-            ).squeeze(-1)
+            x, p = self._argmax_confidence(guided)
             x = torch.where(cond_mask, x, blk_ids)
             conf = torch.where(cond_mask, p, -np.inf)
 
@@ -353,10 +361,7 @@ class LowConfidenceCFG(DllmAlgorithm):
 
             # Confidence-based unmasking with the fixed transfer schedule.
             blk_ids = forward_batch.input_ids[cs:ce]
-            x = torch.argmax(guided, dim=-1)
-            p = torch.gather(
-                F.softmax(guided, dim=-1), dim=-1, index=x.unsqueeze(-1)
-            ).squeeze(-1)
+            x, p = self._argmax_confidence(guided)
             x = torch.where(cond_mask, x, blk_ids)
             conf = torch.where(cond_mask, p, -np.inf)
 
