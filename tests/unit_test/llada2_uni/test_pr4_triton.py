@@ -7,6 +7,28 @@ import torch
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
 
+def test_interleaved_image_stop_token_with_real_triton():
+    from sglang_omni.models.llada2_uni.algorithm.low_confidence_cfg import (
+        LowConfidenceCFG,
+    )
+
+    algorithm = object.__new__(LowConfidenceCFG)
+    algorithm.decode_backend = "triton"
+    algorithm.image_token_offset = 157184
+    logits = torch.full((32, 165376), -10.0, device="cuda")
+    logits[:, 0] = 100.0
+    logits[:, 3] = 20.0
+    logits[:, 157184] = 5.0
+    ids, confidence = algorithm._argmax_confidence(
+        logits,
+        force_image_only=True,
+        allowed_token_ids=(3,),
+    )
+    expected = logits.softmax(-1)[:, 3]
+    assert ids.tolist() == [3] * 32
+    torch.testing.assert_close(confidence, expected, rtol=1e-5, atol=1e-6)
+
+
 def test_native_srt_forward_batch_preserves_pr3_metadata():
     from dataclasses import fields, replace
 

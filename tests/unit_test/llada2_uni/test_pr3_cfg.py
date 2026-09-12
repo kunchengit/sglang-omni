@@ -419,11 +419,10 @@ def test_pr4_bootstrap_forwards_tp_and_total_memory_budget(modules, monkeypatch)
         "sglang_omni.scheduling.bootstrap", create_sglang_infrastructure=infrastructure
     )
     stub("sglang_omni.scheduling.dllm_scheduler", DllmScheduler=object())
-    monkeypatch.setattr(modules.bootstrap, "_validate_cfg_eager", lambda _: None)
     monkeypatch.setattr(
         modules.bootstrap, "override_server_args", lambda *_a, **_kw: None
     )
-    args = object()
+    args = NS(dllm_algorithm="LowConfidence")
     with pytest.raises(ReachedInfrastructure):
         modules.bootstrap.create_dllm_thinker_scheduler(
             args, 3, tp_rank=2, nccl_port=29000, total_gpu_memory_fraction=0.7
@@ -531,6 +530,50 @@ def test_guidance_and_five_field_contract(
         assert all(torch.isneginf(logits[:, :3]).all() for logits in kernel_calls)
     if size > 1:
         assert ids[4].item() == 9
+
+
+@pytest.mark.parametrize("size", [1, 2, 3])
+@pytest.mark.parametrize("decode_backend", ["torch", "triton"])
+def test_interleaved_eoi_remains_selectable_in_image_cfg(
+    modules, monkeypatch, size, decode_backend
+):
+    kernel = ModuleType("sglang_omni.models.llada2_uni.algorithm.triton_decode")
+
+    def argmax(logits):
+        ids = logits.argmax(-1)
+        return ids, logits.softmax(-1).gather(-1, ids[:, None]).squeeze(-1)
+
+    kernel.argmax_confidence_triton = argmax
+    monkeypatch.setitem(sys.modules, kernel.__name__, kernel)
+    algorithm = modules.algo.LowConfidenceCFG(
+        NS(
+            block_size=4,
+            mask_id=9,
+            first_done_first_out_mode=False,
+            algorithm_config={
+                "image_token_offset": 3,
+                "decode_backend": decode_backend,
+            },
+        )
+    )
+    reqs = group(size)
+    if size == 1:
+        del reqs[0]._cfg_group_rid
+    reqs[0]._task_kind = "interleaved"
+    reqs[0]._interleaved_phase = "image"
+    reqs[0].eos_token_ids = {2}
+    reqs[0]._dllm_steps = 1
+    ids = torch.tensor([1, 9, 9, 9] * size)
+
+    def forward(batch, **_):
+        # Token 0 must be masked, EOI=2 must beat image token 3.
+        logits = torch.tensor([[100.0, 0.0, 20.0, 5.0, 0.0]]).repeat(size * 4, 1)
+        return NS(logits_output=NS(full_logits=logits), can_run_graph=False)
+
+    result = algorithm.run(
+        NS(forward=forward), NS(input_ids=ids, batch_size=size, reqs=reqs)
+    )
+    assert [row.tolist() for row in result[1]] == [[2, 2, 2]] * size
 
 
 def test_cfg_prefill_does_not_denoise_padding(modules):

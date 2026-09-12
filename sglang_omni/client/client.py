@@ -65,9 +65,11 @@ class Client:
             async with aclosing(coordinator_stream):
                 async for msg in coordinator_stream:
                     if isinstance(msg, StreamMessage):
-                        yield self._stream_builder(req_id, msg)
+                        chunk = self._stream_builder(req_id, msg)
                     else:
-                        yield self._result_builder(req_id, msg.result)
+                        chunk = self._result_builder(req_id, msg.result)
+                    _validate_stream_chunk(chunk)
+                    yield chunk
             return
 
         result = await self._coordinator.submit(req_id, omni_request)
@@ -102,7 +104,7 @@ class Client:
         omni_rollout: dict[str, Any] | None = None
         weight_version: str | None = None
         language: str | None = None
-        image_b64: str | None = None
+        content: list[dict[str, Any]] | None = None
 
         async for chunk in self.generate(request, request_id=request_id):
             last_chunk = chunk
@@ -112,8 +114,8 @@ class Client:
                 audio_chunks.append(chunk.audio_data)
             if chunk.sample_rate is not None:
                 sample_rate = chunk.sample_rate
-            if chunk.image is not None:
-                image_b64 = chunk.image
+            if chunk.content is not None:
+                content = chunk.content
             if chunk.finish_reason is not None:
                 finish_reason = chunk.finish_reason
             if chunk.output_token_logprobs is not None:
@@ -162,7 +164,7 @@ class Client:
             omni_rollout=omni_rollout,
             weight_version=weight_version,
             language=language,
-            image=image_b64,
+            content=content,
         )
 
     # ------------------------------------------------------------------
@@ -186,6 +188,7 @@ class Client:
         generate_stream = self.generate(request, request_id=request_id)
         async with aclosing(generate_stream):
             async for chunk in generate_stream:
+                _validate_stream_chunk(chunk)
                 audio_b64: str | None = None
                 if chunk.modality == "audio" and chunk.audio_data is not None:
                     audio_b64 = audio_to_base64(
@@ -425,6 +428,31 @@ class Client:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _set_content_data(chunk: GenerateChunk, data: dict[str, Any]) -> None:
+        content = data.get("content")
+        if content is not None:
+            if not isinstance(content, list) or any(
+                not isinstance(part, dict) for part in content
+            ):
+                raise ClientError("Result content must be an ordered list of objects")
+            chunk.content = list(content)
+        elif data.get("image") is not None:
+            # PR3 terminal payloads are normalized once at the client boundary.
+            chunk.content = []
+            if chunk.text:
+                chunk.content.append({"type": "text", "text": chunk.text})
+            chunk.content.append(
+                {
+                    "type": "image",
+                    "image": {
+                        "data": data["image"],
+                        "format": data.get("format", "png"),
+                    },
+                }
+            )
+            chunk.modality = "image"
+
+    @staticmethod
     def _set_audio_data(chunk: GenerateChunk, data: dict[str, Any]) -> None:
         audio_data = data.get("audio_data") or data.get("audio")
         if audio_data is None and data.get("audio_waveform") is not None:
@@ -499,9 +527,10 @@ class Client:
                 if audio_result is not None:
                     Client._set_audio_data(chunk, audio_result)
                     chunk.usage = chunk.usage or Client._build_usage_info(audio_result)
-                if image_result is not None and image_result.get("image") is not None:
-                    chunk.image = image_result["image"]
-                    chunk.modality = "image"
+                if image_result is not None and chunk.content is None:
+                    Client._set_content_data(chunk, image_result)
+                if result.get("content") is not None:
+                    Client._set_content_data(chunk, result)
                 return chunk
             text = result.get("text")
             if isinstance(text, str):
@@ -535,9 +564,7 @@ class Client:
             if isinstance(language, str):
                 chunk.language = language
             Client._set_audio_data(chunk, result)
-            if result.get("image") is not None:
-                chunk.image = result["image"]
-                chunk.modality = "image"
+            Client._set_content_data(chunk, result)
             chunk.usage = Client._build_usage_info(result)
             return chunk
         if isinstance(result, str):
@@ -548,6 +575,7 @@ class Client:
 
     @staticmethod
     def _default_stream_builder(request_id: str, msg: StreamMessage) -> GenerateChunk:
+        _validate_stream_chunk(msg.chunk, modality=msg.modality)
         chunk = GenerateChunk(request_id=request_id)
         chunk.stage_name = msg.stage_name or msg.from_stage
         chunk.stage_id = msg.stage_id
@@ -616,8 +644,36 @@ def _validate_image_streaming(request: GenerateRequest) -> None:
         if request.output_modalities is not None
         else request.metadata.get("output_modalities")
     )
-    if request.metadata.get("image_generation") is not None or "image" in (
-        modalities or []
+    if (
+        request.metadata.get("image_generation") is not None
+        or request.metadata.get("interleaved_generation") is not None
+        or "image" in (modalities or [])
+    ):
+        raise ClientError(
+            "Image generation does not support streaming; set stream=false"
+        )
+
+
+def _validate_stream_chunk(data: Any, *, modality: str | None = None) -> None:
+    image_modality = modality in {"image", "interleaved"}
+    if isinstance(data, dict):
+        modality = data.get("modality", modality)
+        content = data.get("content")
+        has_image = data.get("image") is not None
+    elif isinstance(data, GenerateChunk):
+        modality = data.modality or modality
+        content = data.content
+        has_image = False
+    else:
+        content, has_image = None, False
+    if (
+        image_modality
+        or modality in {"image", "interleaved"}
+        or has_image
+        or any(
+            isinstance(part, dict) and part.get("type") in {"image", "image_url"}
+            for part in (content if isinstance(content, list) else [])
+        )
     ):
         raise ClientError(
             "Image generation does not support streaming; set stream=false"

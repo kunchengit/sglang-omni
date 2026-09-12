@@ -18,7 +18,7 @@ def extract_image_vq_tokens(
     state: LLaDA2UniPipelineState,
 ) -> tuple[list[int], int, int, dict[str, Any]] | None:
     """Return decoder codebook IDs, semantic grid size, and generation options."""
-    if state.task_kind not in ("t2i", "edit"):
+    if state.task_kind not in ("t2i", "edit", "interleaved"):
         return None
     thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
     if not isinstance(thinker_out, dict):
@@ -47,7 +47,12 @@ def extract_image_vq_tokens(
         h = w = math.isqrt(len(tokens))
         if h * w != len(tokens):
             raise ValueError(f"Cannot infer an image grid from {len(tokens)} VQ tokens")
-    params = state.request_metadata.get("image_generation", {})
+    key = (
+        "interleaved_generation"
+        if state.task_kind == "interleaved"
+        else "image_generation"
+    )
+    params = state.request_metadata.get(key, {})
     return tokens, h, w, params if isinstance(params, dict) else {}
 
 

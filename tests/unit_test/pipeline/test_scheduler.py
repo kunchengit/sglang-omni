@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import gc
 import importlib
@@ -36,6 +37,25 @@ def _serving_bag(monkeypatch):
     serving = SimpleNamespace(weight_version=None)
     monkeypatch.setattr(omni_scheduler_module, "get_serving", lambda: serving)
     monkeypatch.setattr(sglang_scheduler_module, "get_serving", lambda: serving)
+
+
+def test_simple_scheduler_abort_suppresses_all_queued_frames() -> None:
+    computed = []
+    scheduler = SimpleScheduler(
+        lambda payload: computed.append(payload) or payload,
+        allow_multiple_inflight_per_request=True,
+    )
+    scheduler.abort("frames")
+    loop = asyncio.new_event_loop()
+    try:
+        for frame in (1, 2):
+            scheduler._run_single(IncomingMessage("frames", "new_request", frame), loop)
+        scheduler._run_single(IncomingMessage("other", "new_request", 3), loop)
+    finally:
+        loop.close()
+    assert computed == [3]
+    assert scheduler.outbox.get_nowait().request_id == "other"
+    assert scheduler.outbox.empty()
 
 
 def _ingress(

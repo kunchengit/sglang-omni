@@ -48,6 +48,7 @@ class SimpleScheduler:
         max_concurrency: int = 1,
         abort_callback: Callable[[str], None] | None = None,
         shutdown_callback: Callable[[], None] | None = None,
+        allow_multiple_inflight_per_request: bool = False,
     ):
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -73,6 +74,7 @@ class SimpleScheduler:
             )
         self._abort_callback = abort_callback
         self._shutdown_callback = shutdown_callback
+        self.allow_multiple_inflight_per_request = allow_multiple_inflight_per_request
         self._shutdown_lock = threading.Lock()
         self._aborted: set[str] = set()
         self._draining_aborts: set[tuple[str, int]] = set()
@@ -108,7 +110,8 @@ class SimpleScheduler:
         with self._abort_lock:
             if request_id not in self._aborted:
                 return False
-            self._aborted.discard(request_id)
+            if not self.allow_multiple_inflight_per_request:
+                self._aborted.discard(request_id)
         self._cleanup_aborted_request(request_id)
         return True
 

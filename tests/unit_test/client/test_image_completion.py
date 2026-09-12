@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""PR3 terminal image results without interleaved or image-stream support."""
+"""Legacy image terminals normalize to ordered content, without image streaming."""
 
 from __future__ import annotations
 
@@ -47,9 +47,14 @@ def test_image_result_preserves_decode_fields(merged):
         else {**decode, "image": "cG5n"}
     )
     chunk = Client._default_result_builder("r1", result)
-    assert chunk.image == "cG5n"
+    content = [
+        {"type": "text", "text": decode["text"]},
+        {"type": "image", "image": {"data": "cG5n", "format": "png"}},
+    ]
+    assert chunk.content == content
     assert chunk.modality == "image"
-    assert chunk.to_dict()["image"] == "cG5n"
+    assert chunk.to_dict()["content"] == content
+    assert "image" not in chunk.to_dict()
     assert chunk.token_ids == decode["token_ids"]
     assert chunk.logprobs == decode["logprobs"]
     assert chunk.stage_id == 2
@@ -61,7 +66,7 @@ def test_image_result_preserves_decode_fields(merged):
             GenerateRequest(prompt="draw a square", stream=False), request_id="r1"
         )
     )
-    assert completion.image == "cG5n"
+    assert completion.content == content
     assert completion.audio is None
     assert completion.text == decode["text"]
     assert completion.finish_reason == "length"
@@ -79,17 +84,18 @@ def test_empty_image_terminal_preserves_text(image_result):
         "r1", {"decode": {"text": "No image"}, "image_decode": image_result}
     )
     assert chunk.text == "No image"
-    assert chunk.image is None
+    assert chunk.content is None
     assert chunk.modality == "text"
 
 
 def test_custom_image_chunk_completes():
-    chunk = GenerateChunk(request_id="original", image="cG5n", modality="image")
+    content = [{"type": "image", "image": {"data": "cG5n", "format": "png"}}]
+    chunk = GenerateChunk(request_id="original", content=content, modality="image")
     client = Client(RecordingCoordinator(chunk))
     result = asyncio.run(
         client.completion(GenerateRequest(prompt="draw", stream=False), request_id="r1")
     )
-    assert result.image == "cG5n"
+    assert result.content == content
     assert result.request_id == chunk.request_id == "r1"
 
 
@@ -115,7 +121,7 @@ def test_merged_audio_keeps_usage_fallback(audio_stage, with_decode_usage):
     assert chunk.audio_data == [0.1, -0.1]
     assert chunk.sample_rate == 24000
     assert chunk.modality == "audio"
-    assert chunk.image is None
+    assert chunk.content is None
     assert chunk.usage.total_tokens == (5 if with_decode_usage else 10)
 
 
@@ -123,6 +129,7 @@ def test_merged_audio_keeps_usage_fallback(audio_stage, with_decode_usage):
     "kwargs",
     [
         {"metadata": {"image_generation": {}}},
+        {"metadata": {"interleaved_generation": {}}},
         {"output_modalities": ["image"]},
         {"metadata": {"output_modalities": ["image"]}},
     ],

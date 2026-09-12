@@ -149,6 +149,36 @@ def test_sp_follower_has_no_external_kv_endpoint():
 
 
 @pytest.mark.parametrize("follower", [False, True])
+def test_sp_tracks_queued_frame_terminals_in_fifo_order(follower):
+    scheduler = SimpleScheduler(lambda p: p, allow_multiple_inflight_per_request=True)
+    stage, work, _ = make_stage(follower=follower, scheduler=scheduler)
+
+    async def run():
+        for frame in (1, 2):
+            payload = SimpleNamespace(request_id="frames", timing={}, data=frame)
+            if follower:
+                await stage._execute(payload, dispatch_id=frame)
+            else:
+                await stage.receive_local_payload("frames", "thinker", payload)
+                assert work.get_nowait().dispatch_id == frame
+        assert stage._inflight_work_pending["frames"] == 2
+        if follower:
+            await stage._execute(payload, dispatch_id=2)
+            assert stage._inflight_work_pending["frames"] == 2
+        for remaining in (1, 0):
+            incoming = scheduler.inbox.get_nowait()
+            stage._acknowledge_terminal("frames")
+            await stage._route_result("frames", incoming.data)
+            assert stage._inflight_work_pending.get("frames", 0) == remaining
+            assert stage._dispatches.current("frames") == (2 if remaining else None)
+            if not follower:
+                assert ("frames" in stage._active_requests) == bool(remaining)
+        assert scheduler.inbox.empty()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("follower", [False, True])
 @pytest.mark.parametrize("terminal", ["result", "error"])
 def test_abort_drains_committed_work_and_acknowledges_terminal(follower, terminal):
     cleaned = []

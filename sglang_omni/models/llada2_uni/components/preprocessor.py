@@ -19,6 +19,10 @@ from sglang_omni.models.llada2_uni.config import (
     DEFAULT_THINKER_MAX_NEW_TOKENS,
     IMAGE_STAGE,
 )
+from sglang_omni.models.llada2_uni.interleaved import (
+    SYSTEM_PROMPT_INTERLEAVED,
+    InterleavedGenerationConfig,
+)
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.image import (
@@ -324,8 +328,25 @@ class LLaDA2Preprocessor:
         metadata = request.metadata if isinstance(request.metadata, dict) else {}
         image_generation = metadata.get("image_generation")
         task_kind = "chat"
-        if isinstance(image_generation, dict):
-            task_kind = "edit" if raw_images else "t2i"
+        has_interleaved = "interleaved_generation" in metadata and isinstance(
+            metadata["interleaved_generation"], dict
+        )
+        has_image_generation = isinstance(image_generation, dict)
+        if has_interleaved:
+            if has_image_generation:
+                raise ValueError(
+                    "image_generation and interleaved_generation are mutually exclusive"
+                )
+            if self._has_non_text_input(raw_inputs, metadata, messages):
+                raise ValueError(
+                    "interleaved generation currently requires text-only input"
+                )
+            task_kind = "interleaved"
+        elif has_image_generation:
+            # image_generation + input images → edit; image_generation + no images → t2i
+            has_images = bool(raw_images)
+            task_kind = "edit" if has_images else "t2i"
+
         if task_kind == "edit":
             self._require_edit_instruction(messages)
         image_cache_key = compute_image_cache_key(raw_images)
@@ -426,13 +447,24 @@ class LLaDA2Preprocessor:
                     self._set_cfg_branch(stream_state, input_ids, uncond)
             else:
                 raise ValueError(f"Unsupported image generation mode: {mode!r}")
+        elif task_kind == "interleaved":
+            interleaved_config = InterleavedGenerationConfig.from_metadata(metadata)
+            stream_state.update(
+                interleaved_config.to_stream_state(
+                    prompt_length=len(input_ids),
+                    max_seq_len=self._max_seq_len or 8192,
+                )
+            )
 
         input_ids_tensor = torch.tensor([input_ids], dtype=torch.long)
+        validation_max_new_tokens = max_new_tokens
+        if task_kind == "interleaved":
+            validation_max_new_tokens = 1
 
         validate_prompt_seq_len(
             input_ids_tensor,
             max_seq_len=self._max_seq_len,
-            max_new_tokens=max_new_tokens,
+            max_new_tokens=validation_max_new_tokens,
             request_id=payload.request_id,
         )
 
@@ -482,6 +514,36 @@ class LLaDA2Preprocessor:
         return raw_images, image_counts_per_msg
 
     @staticmethod
+    def _has_non_text_input(
+        raw_inputs: Any,
+        request_metadata: Any,
+        messages: list[dict[str, Any]],
+    ) -> bool:
+        if any(
+            isinstance(container, dict)
+            and any(container.get(key) for key in ("images", "audios", "videos"))
+            for container in (raw_inputs, request_metadata)
+        ):
+            return True
+
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, str):
+                continue
+            if not isinstance(content, list):
+                return True
+            for item in content:
+                if isinstance(item, str):
+                    continue
+                if (
+                    not isinstance(item, dict)
+                    or item.get("type") != "text"
+                    or not isinstance(item.get("text"), str)
+                ):
+                    return True
+        return False
+
+    @staticmethod
     def _validate_messages(messages: list[dict[str, Any]]) -> None:
         if not isinstance(messages, list):
             raise ValueError("Preprocessing expects a list of chat messages")
@@ -506,6 +568,7 @@ class LLaDA2Preprocessor:
             "t2i": SYSTEM_PROMPT_T2I,
             "t2i_thinking": SYSTEM_PROMPT_T2I_THINKING,
             "edit": EDIT_SYSTEM_PROMPT,
+            "interleaved": SYSTEM_PROMPT_INTERLEAVED,
         }.get(task_kind, DEFAULT_SYSTEM_PROMPT)
         parts.append(f"{ROLE_SYSTEM} {system_prompt} ")
 

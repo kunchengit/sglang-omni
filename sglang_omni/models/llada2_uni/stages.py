@@ -326,6 +326,21 @@ def create_image_decode_executor(
         buf = io.BytesIO()
         image.save(buf, format="PNG")
         image_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        if state.task_kind == "interleaved":
+            frame_index = int(state.stream_state["interleaved_frame_index"])
+            segment = state.stream_state["interleaved_segments"][frame_index - 1]
+            payload.data = {
+                "kind": "interleaved_frame",
+                "frame": {
+                    "index": frame_index,
+                    "text": segment.get("text", ""),
+                    "grid_h": h,
+                    "grid_w": w,
+                    "image": image_b64,
+                    "format": "png",
+                },
+            }
+            return payload
         event = LLaDA2UniEvent(
             type="image_final",
             modality="image",
@@ -340,7 +355,7 @@ def create_image_decode_executor(
         return payload
 
     if runtime is None:
-        return SimpleScheduler(_decode_image)
+        return SimpleScheduler(_decode_image, allow_multiple_inflight_per_request=True)
 
     class ImageDecoderScheduler(SimpleScheduler):
         def start(self):
@@ -350,4 +365,6 @@ def create_image_decode_executor(
                 # Shutdown callbacks run before the compute thread has exited.
                 runtime.close()
 
-    return ImageDecoderScheduler(_decode_image)
+    return ImageDecoderScheduler(
+        _decode_image, allow_multiple_inflight_per_request=True
+    )

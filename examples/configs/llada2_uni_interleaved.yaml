@@ -1,0 +1,12 @@
+# Thinker TP1 on GPU0; image decoder SP1 on GPU1.
+config_cls: LLaDA2UniInterleavedPipelineConfig
+model_path: inclusionAI/LLaDA2.0-Uni
+stages:
+  thinker:
+    engine:
+      disable_cuda_graph: false
+  image_decode:
+    factory:
+      backend: diffusers
+      decode_mode: decoder-turbo
+      num_steps: 8

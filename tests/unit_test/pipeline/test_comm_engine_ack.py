@@ -237,8 +237,10 @@ def test_comm_engine_stream_sends_with_reused_semantics_coexist() -> None:
             _stream_ack(request_id="req-reused", object_id=data_ref_a.object_id)
         )
         await _wait_until(
-            lambda: data_ref_a.object_id not in engine._pending
-            and all(op.waited for op in ops_a)
+            lambda: (
+                data_ref_a.object_id not in engine._pending
+                and all(op.waited for op in ops_a)
+            )
         )
         assert all(op.acked for op in ops_a)
         assert data_ref_b.object_id in engine._pending
@@ -248,12 +250,63 @@ def test_comm_engine_stream_sends_with_reused_semantics_coexist() -> None:
             _stream_ack(request_id="req-reused", object_id=data_ref_b.object_id)
         )
         await _wait_until(
-            lambda: data_ref_b.object_id not in engine._pending
-            and all(op.waited for op in ops_b)
+            lambda: (
+                data_ref_b.object_id not in engine._pending
+                and all(op.waited for op in ops_b)
+            )
         )
         assert all(op.acked for op in ops_b)
 
     asyncio.run(_run())
+
+
+def test_payload_frames_with_reused_request_have_independent_ack_lifetimes() -> None:
+    async def run() -> None:
+        relay = _AckedRelay()
+        control = RecordingStageControlPlane()
+        engine = CommEngine(
+            CommRouter(
+                stage_name="producer",
+                gpu_id=None,
+                same_process_targets=set(),
+                gpu_stage_names=set(),
+                comm_config={"ack_timeout_s": 1.0},
+                injected_relay=relay,
+            ),
+            task_done_callback=_consume_task_exception,
+        )
+        refs = []
+        for frame in range(3):
+            refs.append(
+                await engine.send_payload(
+                    relay=relay,
+                    control_plane=control,
+                    request_id="r",
+                    payload=make_stage_payload(request_id="r", data={"frame": frame}),
+                    transport=TransportKind.SHM,
+                    from_stage="producer",
+                    to_stage="consumer",
+                    target_endpoint="inproc://consumer",
+                )
+            )
+        assert len({ref.object_id for ref in refs}) == 3
+        assert set(engine._pending) == {ref.object_id for ref in refs}
+        for index in [1, 0, 2]:
+            engine.ack_transfer(
+                _stream_ack(request_id="r", object_id=refs[index].object_id)
+            )
+            await _wait_until(lambda: refs[index].object_id not in engine._pending)
+            assert relay.ops[index].waited
+            # A repeated old ACK cannot acknowledge any remaining frame.
+            engine.ack_transfer(
+                _stream_ack(request_id="r", object_id=refs[index].object_id)
+            )
+            for other in range(3):
+                if refs[other].object_id in engine._pending:
+                    assert not relay.ops[other].acked
+        await engine.close()
+
+    asyncio.run(run())
 
 
 def test_stream_stale_ack_does_not_complete_reused_send() -> None:
@@ -282,8 +335,9 @@ def test_stream_stale_ack_does_not_complete_reused_send() -> None:
         assert pending_a.task is not None
 
         await _wait_until(
-            lambda: data_ref_a.object_id not in engine._pending
-            and pending_a.task.done(),
+            lambda: (
+                data_ref_a.object_id not in engine._pending and pending_a.task.done()
+            ),
             timeout=5.0,
         )
         with pytest.raises(asyncio.TimeoutError):

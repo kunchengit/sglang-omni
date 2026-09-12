@@ -134,6 +134,7 @@ class CommEngine:
         ] = {}
         self._send_workers: dict[str, asyncio.Task] = {}
         self._pending: dict[str, _PendingTransfer] = {}
+        self._payload_send_sequence = count()
         self._stream_send_sequence = count()
         # Failed pending KV transfers stay pinned until this dying process exits.
         self._retained_pending_kv_transfers: list[_PendingTransfer] = []
@@ -913,6 +914,10 @@ class CommEngine:
                 transport=job.transport,
                 from_stage=job.from_stage,
                 to_stage=job.to_stage,
+                object_id=(
+                    f"{job.request_id}:payload:{job.from_stage}:{job.to_stage}:"
+                    f"{next(self._payload_send_sequence)}"
+                ),
             )
             write_ms = _comm_elapsed_ms(write_start)
             object_id = data_ref.object_id
