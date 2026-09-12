@@ -96,12 +96,15 @@ def test_request_attaches_original_three_way_cfg_contract():
 
 
 @pytest.mark.parametrize("branch", ["uncond", "uncond_img"])
-def test_request_rejects_unaligned_cfg_branches(branch):
+def test_request_aligns_short_cfg_branches(branch):
     state = image_state()
     state.stream_state["uncond_input_ids"] = [1, 2, 3]
     state.stream_state[f"{branch}_input_ids"] = [1]
-    with pytest.raises(ValueError, match="equal physical lengths"):
-        build_request(state)
+    req = build_request(
+        state, tokenizer=SimpleNamespace(eos_token_id=2, mask_token_id=99)
+    )
+    assert getattr(req, f"_{branch}_input_ids") == [99, 99, 1]
+    assert getattr(req, f"_{branch}_left_pad_len") == 2
 
 
 def test_request_rejects_invalid_padding():
@@ -109,6 +112,36 @@ def test_request_rejects_invalid_padding():
     state.stream_state.update(uncond_input_ids=[1, 2, 3], uncond_left_pad_len=-1)
     with pytest.raises(ValueError, match="left-pad length"):
         build_request(state)
+
+
+def test_request_aligns_conditional_before_upstream_req_initialization():
+    state = image_state(task_kind="edit")
+    state.stream_state.update(
+        uncond_input_ids=[20, 21, 22, 23, 24],
+        uncond_img_input_ids=[99, 30],
+        uncond_img_left_pad_len=1,
+    )
+    req = build_request(
+        state, tokenizer=SimpleNamespace(eos_token_id=2, mask_token_id=99)
+    )
+    assert req.origin_input_ids == array("q", [99, 99, 11, 12, 13])
+    assert req.origin_input_ids_unpadded is req.origin_input_ids
+    assert req._dllm_left_pad_len == 2
+    assert req._uncond_left_pad_len == 0
+    assert req._uncond_img_input_ids == [99, 99, 99, 99, 30]
+    assert req._uncond_img_left_pad_len == 4
+    req._init_fill_ids_for_dllm()
+    assert list(req.full_untruncated_fill_ids[:5]) == list(req.origin_input_ids)
+    assert state.prompt["input_ids"].tolist() == [[11, 12, 13]]
+
+
+def test_cfg_longest_branch_rechecks_context_budget():
+    state = image_state()
+    state.stream_state.update(uncond_input_ids=[20] * 5, max_seq_len=10)
+    with pytest.raises(ValueError):
+        build_request(
+            state, tokenizer=SimpleNamespace(eos_token_id=2, mask_token_id=99)
+        )
 
 
 def test_thinking_request_stops_at_boi_without_cfg():

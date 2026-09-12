@@ -583,9 +583,13 @@ class LLaDA2Preprocessor:
         *,
         branch: str = "uncond",
     ) -> None:
-        ids, pad_len = align_cfg_unconditional_input_ids(
-            self._tokenizer, conditional, unconditional
-        )
+        if len(unconditional) > len(conditional):
+            # The request builder aligns the complete group, including conditional.
+            ids, pad_len = list(unconditional), 0
+        else:
+            ids, pad_len = align_cfg_unconditional_input_ids(
+                self._tokenizer, conditional, unconditional
+            )
         stream_state[f"{branch}_input_ids"] = ids
         stream_state[f"{branch}_left_pad_len"] = pad_len
 

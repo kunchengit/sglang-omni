@@ -17,6 +17,8 @@ from sglang.srt.layers.attention.flashinfer_backend import (
 )
 from sglang.srt.mem_cache.memory_pool import KVWriteLoc
 
+from sglang_omni.models.llada2_uni.cfg_cuda_graph_metadata import cfg_attention_geometry
+
 CFG_ATTENTION_BACKEND = "llada2_uni_cfg_flashinfer"
 
 
@@ -47,46 +49,79 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
 
     def init_forward_metadata(self, forward_batch):
         self._cfg_local_left_pad_active = False
-
-        # Clear FlashInfer's stale ragged custom mask before each non-graph batch.
         cfg_prefill_wrapper = self._cfg_prefill_wrapper_ragged
         self._clear_stale_ragged_custom_mask(cfg_prefill_wrapper)
-
-        left_pad_lens = getattr(forward_batch, "dllm_left_pad_lens", None)
-        forward_mode = forward_batch.forward_mode
-        if (
-            left_pad_lens is None
-            or not forward_mode.is_dllm_extend()
-            or not bool(torch.any(left_pad_lens > 0).item())
-        ):
+        if not forward_batch.forward_mode.is_dllm_extend():
             return super().init_forward_metadata(forward_batch)
+        geometry = cfg_attention_geometry(forward_batch)
+        if not any(geometry.pad):
+            return super().init_forward_metadata(forward_batch)
+        self._plan_cfg_attention(
+            forward_batch, geometry, self.prefill_wrappers_paged, graph=False
+        )
 
-        if self.num_wrappers != 1:
-            raise RuntimeError(
-                "DLLM edit CFG padding currently requires one "
-                "FlashInfer attention wrapper"
+    def init_cuda_graph_state(self, max_bs, max_num_tokens, kv_indices_buf=None):
+        super().init_cuda_graph_state(max_bs, max_num_tokens, kv_indices_buf)
+        device = self.cuda_graph_kv_indices[0].device
+        self._cfg_graph_cached_pad = torch.zeros(
+            max_bs, dtype=torch.int32, device=device
+        )
+        self._cfg_graph_paged_lens = torch.zeros_like(self._cfg_graph_cached_pad)
+
+    def init_forward_metadata_out_graph(self, forward_batch, in_capture=False):
+        """Refresh host plans before capture/replay, never via metadata-glue capture."""
+        self._cfg_local_left_pad_active = False
+        if not forward_batch.forward_mode.is_dllm_extend():
+            return super().init_forward_metadata_out_graph(forward_batch, in_capture)
+        geometry = cfg_attention_geometry(forward_batch)
+        if any(geometry.local_pad):
+            raise ValueError(
+                "DLLM CFG CUDA graph requires left padding entirely in the cached "
+                "prefix; query-local padding must use eager attention"
             )
+        bs = forward_batch.batch_size
+        if in_capture:
+            self._prepare_cuda_graph_metadata(
+                bs, forward_batch.positions.numel(), forward_batch.forward_mode, None
+            )
+        self._plan_cfg_attention(
+            forward_batch, geometry, self.prefill_cuda_graph_metadata[bs], graph=True
+        )
 
+    def _plan_cfg_attention(self, forward_batch, geometry, wrappers, *, graph):
         seq_lens = forward_batch.seq_lens
         prefix_lens = forward_batch.extend_prefix_lens
-        left_pad_lens = left_pad_lens.to(device=seq_lens.device, dtype=seq_lens.dtype)
-        if left_pad_lens.numel() != seq_lens.numel():
-            raise RuntimeError(
-                f"CFG pad metadata has {left_pad_lens.numel()} entries for "
-                f"batch size {seq_lens.numel()}"
+        bs = len(geometry.query)
+        # Length decisions use CPU mirrors. Stable derived buffers are backend-owned.
+        if graph:
+            kv_view = self.kv_index_translator.build_index_table(
+                req_pool_indices=forward_batch.req_pool_indices[:bs],
+                seq_lens=seq_lens[:bs],
+                into=self.kv_read_tables,
             )
-        # Split edit padding across the cached prefix and current query span.
-        query_lens = seq_lens - prefix_lens
-        if bool(torch.any(query_lens <= 0).item()):
-            raise RuntimeError("DLLM CFG batch contains an empty active block")
-        cached_left_pad_lens = torch.minimum(left_pad_lens, prefix_lens)
-        local_left_pad_lens = torch.minimum(
-            torch.clamp(left_pad_lens - prefix_lens, min=0), query_lens
-        )
-        if bool(torch.any(local_left_pad_lens > 0).item()):
+            cached_left_pad_lens = self._cfg_graph_cached_pad[:bs]
+            paged_kernel_lens = self._cfg_graph_paged_lens[:bs]
+            torch.minimum(
+                forward_batch.dllm_left_pad_lens,
+                prefix_lens,
+                out=cached_left_pad_lens,
+            )
+            torch.sub(prefix_lens, cached_left_pad_lens, out=paged_kernel_lens)
+        else:
+            kv_view = self.kv_index_translator.index_table_for_batch(forward_batch)
+            cached_left_pad_lens = torch.tensor(
+                geometry.cached_pad, dtype=seq_lens.dtype, device=seq_lens.device
+            )
+            paged_kernel_lens = torch.tensor(
+                geometry.paged_lens, dtype=seq_lens.dtype, device=seq_lens.device
+            )
+        local_pad_active = any(geometry.local_pad)
+        cfg_prefill_wrapper = self._cfg_prefill_wrapper_ragged
+        prefill_indices_updater = self.indices_updater_prefill
+        if local_pad_active:
             flattened_request_masks = []
             for query_length, local_left_pad_length in zip(
-                query_lens.tolist(), local_left_pad_lens.tolist()
+                geometry.query, geometry.local_pad
             ):
                 request_attention_mask = torch.ones(
                     (query_length, query_length),
@@ -107,16 +142,14 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
                 dtype=torch.int32,
                 device=seq_lens.device,
             )
-            qo_indptr[1:] = torch.cumsum(query_lens, dim=0)
-            prefill_indices_updater = self.indices_updater_prefill
+            qo_indptr[1:] = torch.cumsum(seq_lens - prefix_lens, dim=0)
             # Exclude edit pads from cached-prefix attention without replacing the custom mask.
-            paged_kernel_lens = prefix_lens - cached_left_pad_lens
             prefill_indices_updater.call_begin_forward(
                 cfg_prefill_wrapper,
-                self.prefill_wrappers_paged[0],
+                wrappers[0],
                 forward_batch.req_pool_indices,
                 paged_kernel_lens,
-                int(paged_kernel_lens.sum().item()),
+                sum(geometry.paged_lens),
                 seq_lens,
                 prefix_lens,
                 cached_left_pad_lens,
@@ -125,6 +158,7 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
                 False,
                 None,
                 fixed_split_size=self.prefill_split_tile_size,
+                kv_view=kv_view,
             )
             cfg_prefill_wrapper.begin_forward(
                 qo_indptr,
@@ -140,17 +174,15 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
                 fixed_split_size=self.prefill_split_tile_size,
             )
             self._cfg_local_left_pad_active = True
-            self._cfg_has_cached_prefix = bool(torch.any(paged_kernel_lens > 0).item())
+            self._cfg_has_cached_prefix = any(geometry.paged_lens)
         else:
             self._cfg_local_left_pad_active = False
-            paged_kernel_lens = prefix_lens - cached_left_pad_lens
-            prefill_indices_updater = self.indices_updater_prefill
             prefill_indices_updater.call_begin_forward(
                 prefill_indices_updater.prefill_wrapper_ragged,
-                self.prefill_wrappers_paged[0],
+                wrappers[0],
                 forward_batch.req_pool_indices,
                 paged_kernel_lens,
-                int(paged_kernel_lens.sum().item()),
+                sum(geometry.paged_lens),
                 seq_lens,
                 prefix_lens,
                 cached_left_pad_lens,
@@ -159,10 +191,11 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
                 True,
                 None,
                 fixed_split_size=self.prefill_split_tile_size,
+                kv_view=kv_view,
             )
 
         self.forward_metadata = PrefillMetadata(
-            self.prefill_wrappers_paged,
+            wrappers,
             use_ragged=True,
             extend_no_prefix=False,
         )

@@ -11,6 +11,7 @@ import torch
 from sglang_omni.models.llada2_uni.components.preprocessor import (
     DUMMY_IMAGE_TOKEN_ID,
     IMAGE_TOKEN_OFFSET,
+    validate_prompt_seq_len,
 )
 from sglang_omni.models.llada2_uni.config import (
     DEFAULT_THINKER_MAX_NEW_TOKENS,
@@ -23,6 +24,29 @@ from sglang_omni.models.llada2_uni.payload_types import (
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend import SGLangDLLMRequestData
+
+
+def _align_cfg_branch_group(
+    *,
+    tokenizer: Any,
+    branches: dict[str, list[int]],
+    existing_left_pad_lens: dict[str, int],
+) -> tuple[dict[str, list[int]], dict[str, int]]:
+    """Left-pad all physical branches, including conditional, to the longest."""
+    target_length = max(len(ids) for ids in branches.values())
+    mask_id = getattr(tokenizer, "mask_token_id", None)
+    aligned = {}
+    pads = {}
+    for name, ids in branches.items():
+        old_pad = int(existing_left_pad_lens.get(name, 0))
+        if not 0 <= old_pad <= len(ids):
+            raise ValueError(f"Invalid CFG {name} left-pad length: {old_pad}")
+        added_pad = target_length - len(ids)
+        if added_pad and mask_id is None:
+            raise ValueError("LLaDA2 tokenizer has no mask_token_id for CFG padding")
+        aligned[name] = ([int(mask_id)] * added_pad if added_pad else []) + list(ids)
+        pads[name] = old_pad + added_pad
+    return aligned, pads
 
 
 def build_encoder_request(
@@ -151,6 +175,27 @@ def build_dllm_thinker_request(
         boi_id = tokenizer.convert_tokens_to_ids("<boi>")
         eos_token_ids = (eos_token_ids or set()) | {boi_id}
 
+    # Align before Req construction: 0.5.20 aliases token arrays during init.
+    cfg_branches = None
+    cfg_pads = None
+    uncond_ids = ss.get("uncond_input_ids")
+    if uncond_ids is not None and not thinking_phase1:
+        branches = {"conditional": list(input_ids_array), "uncond": list(uncond_ids)}
+        existing_pads = {"uncond": int(ss.get("uncond_left_pad_len", 0))}
+        if ss.get("uncond_img_input_ids") is not None:
+            branches["uncond_img"] = list(ss["uncond_img_input_ids"])
+            existing_pads["uncond_img"] = int(ss.get("uncond_img_left_pad_len", 0))
+        cfg_branches, cfg_pads = _align_cfg_branch_group(
+            tokenizer=tokenizer, branches=branches, existing_left_pad_lens=existing_pads
+        )
+        input_ids_array = array("q", cfg_branches["conditional"])
+        validate_prompt_seq_len(
+            torch.tensor(input_ids_array, dtype=torch.long),
+            max_seq_len=ss.get("max_seq_len"),
+            max_new_tokens=max_new_tokens,
+            request_id=request_id,
+        )
+
     rid = request_id or "req-0"
     req = Req(
         rid=rid,
@@ -171,24 +216,19 @@ def build_dllm_thinker_request(
     if ss.get("dllm_steps") is not None:
         req._dllm_steps = int(ss["dllm_steps"])
 
-    uncond_ids = ss.get("uncond_input_ids")
-    if uncond_ids is not None and not thinking_phase1:
+    if cfg_branches is not None:
+        req._dllm_left_pad_len = cfg_pads["conditional"]
         ig = state.request_metadata.get("image_generation", {})
         req._cfg_scale = float(
             ss.get("cfg_scale", ig.get("cfg_text_scale", ig.get("cfg_scale", 1.0)))
         )
         req._cfg_rescale = float(ss.get("cfg_rescale", ig.get("cfg_rescale", 0.7)))
         for branch in ("uncond", "uncond_img"):
-            branch_ids = ss.get(f"{branch}_input_ids")
+            branch_ids = cfg_branches.get(branch)
             if branch_ids is None:
                 continue
-            if len(branch_ids) != len(input_ids_array):
-                raise ValueError("CFG branches must have equal physical lengths")
-            pad_len = int(ss.get(f"{branch}_left_pad_len", 0))
-            if not 0 <= pad_len <= len(branch_ids):
-                raise ValueError(f"Invalid CFG {branch} left-pad length: {pad_len}")
             setattr(req, f"_{branch}_input_ids", list(branch_ids))
-            setattr(req, f"_{branch}_left_pad_len", pad_len)
+            setattr(req, f"_{branch}_left_pad_len", cfg_pads[branch])
         if ss.get("uncond_img_input_ids") is not None:
             req._cfg_image_scale = float(
                 ss.get("cfg_image_scale", ig.get("cfg_image_scale", 0.0))
@@ -233,7 +273,6 @@ def _thinking_phase1_to_phase2(
         ROLE_SYSTEM,
         SYSTEM_PROMPT_T2I_THINKING,
         UNCOND_TEXT,
-        align_cfg_unconditional_input_ids,
         validate_prompt_seq_len,
     )
 
@@ -262,11 +301,8 @@ def _thinking_phase1_to_phase2(
             f"<|reserved_token_{info['grid_w']}|><boi>",
             add_special_tokens=False,
         )
-        uncond_ids, pad_len = align_cfg_unconditional_input_ids(
-            tokenizer, phase2_ids, uncond_ids
-        )
         ss["uncond_input_ids"] = uncond_ids
-        ss["uncond_left_pad_len"] = pad_len
+        ss["uncond_left_pad_len"] = 0
     ss["thinking_text"] = tokenizer.decode(
         output_ids[:boi_pos], skip_special_tokens=True
     )

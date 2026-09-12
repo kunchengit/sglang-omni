@@ -13,25 +13,31 @@ def register_llada2_uni_cfg() -> None:
 
     The text-only LowConfidence variant does not need this registration.
     """
+    from sglang.srt.arg_groups.choices import add_dllm_cuda_graph_attention_backend
     from sglang.srt.dllm.algorithm import algo_name_to_cls
 
     from sglang_omni.models.llada2_uni.algorithm.low_confidence_cfg import (
         LowConfidenceCFG,
     )
     from sglang_omni.models.llada2_uni.cfg_attention_backend import (
+        CFG_ATTENTION_BACKEND,
         register_llada2_cfg_flashinfer_backend,
     )
 
     algo_name_to_cls["LowConfidenceCFG"] = LowConfidenceCFG
     register_llada2_cfg_flashinfer_backend()
+    add_dllm_cuda_graph_attention_backend(CFG_ATTENTION_BACKEND)
 
 
-def _validate_cfg_eager(server_args: Any) -> None:
+def _validate_cfg(server_args: Any) -> None:
     from sglang.srt.arg_groups.model_override_base import (
         attention_backends_of,
         resolved_view,
     )
-    from sglang.srt.model_executor.cuda_graph_config import Backend
+
+    from sglang_omni.models.llada2_uni.cfg_cuda_graph_config import (
+        validate_cfg_cuda_graph_config,
+    )
 
     cfg = resolved_view(server_args)
     if cfg.dllm_algorithm != "LowConfidenceCFG":
@@ -50,16 +56,7 @@ def _validate_cfg_eager(server_args: Any) -> None:
     if cfg.dllm_fdfo:
         raise ValueError("LowConfidenceCFG requires synchronous DLLM, not FDFO")
 
-    # PR11 must carry branch/pad/position metadata through capture and replay.
-    # The omni factory defaults to eager; explicit graph requests must fail.
-    if any(
-        phase.backend != Backend.DISABLED
-        for phase in (cfg.cuda_graph_config.decode, cfg.cuda_graph_config.prefill)
-    ):
-        raise ValueError(
-            "DLLM CFG currently supports eager execution only. "
-            "Set cuda_graph_backend_decode and cuda_graph_backend_prefill to disabled."
-        )
+    validate_cfg_cuda_graph_config(server_args)
 
 
 def create_dllm_thinker_scheduler(
@@ -84,7 +81,7 @@ def create_dllm_thinker_scheduler(
     from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
     from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
 
-    _validate_cfg_eager(server_args)
+    _validate_cfg(server_args)
     dllm_config = DllmConfig.from_server_args(server_args)
 
     # sglang supports radix cache with dLLM, but Omni's dLLM staging

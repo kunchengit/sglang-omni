@@ -158,6 +158,7 @@ def modules(monkeypatch):
         "sglang.srt.arg_groups.choices",
         ATTENTION_BACKEND_CHOICES=choices,
         add_attention_backend_choices=choices.extend,
+        add_dllm_cuda_graph_attention_backend=lambda name: None,
     )
     stub("sglang.srt.layers.attention.attention_registry", ATTENTION_BACKENDS=registry)
     stub("sglang.srt.mem_cache.memory_pool", KVWriteLoc=lambda *args: ("write", *args))
@@ -175,7 +176,14 @@ def modules(monkeypatch):
         resolved_view=lambda x: x,
         attention_backends_of=lambda x: (x.attention_backend, x.attention_backend),
     )
-    stub("sglang.srt.model_executor.cuda_graph_config", Backend=NS(DISABLED="disabled"))
+    stub(
+        "sglang.srt.model_executor.cuda_graph_config",
+        Backend=NS(DISABLED="disabled", FULL="full"),
+    )
+    stub(
+        "sglang.srt.environ",
+        envs=NS(SGLANG_ENABLE_METADATA_GLUE_GRAPH=NS(get=lambda: False)),
+    )
     stub(
         "sglang_omni.vendor.sglang.server_args",
         override_server_args=lambda *_a, **_k: pytest.fail(
@@ -191,6 +199,10 @@ def modules(monkeypatch):
         "sglang_omni/models/llada2_uni/cfg_attention_backend.py",
     )
     scheduler = load("_pr3_scheduler", "sglang_omni/scheduling/dllm_scheduler.py")
+    load(
+        "sglang_omni.models.llada2_uni.cfg_cuda_graph_config",
+        "sglang_omni/models/llada2_uni/cfg_cuda_graph_config.py",
+    )
     bootstrap = load("_pr3_bootstrap", "sglang_omni/models/llada2_uni/bootstrap.py")
     return NS(
         algo=algo,
@@ -709,8 +721,12 @@ def test_attention_local_and_cached_pad_masks(modules):
     backend.prefill_wrappers_paged = [object()]
     backend.prefill_split_tile_size = None
     calls = []
+    kv_view = object()
+    backend.kv_index_translator = NS(
+        index_table_for_batch=lambda _batch: kv_view,
+    )
     backend.indices_updater_prefill = NS(
-        call_begin_forward=lambda *a, **kw: calls.append(a),
+        call_begin_forward=lambda *a, **kw: calls.append((a, kw)),
         kv_indptr=[None],
         qo_indptr=[None],
         num_qo_heads=1,
@@ -728,8 +744,10 @@ def test_attention_local_and_cached_pad_masks(modules):
         req_pool_indices=torch.tensor([0, 1]),
     )
     backend.init_forward_metadata(batch)
-    assert calls[-1][3].tolist() == [4, 0]  # Real cached keys only.
-    assert calls[-1][7].tolist() == [0, 4]  # Skip cached pads.
+    args, kwargs = calls[-1]
+    assert args[3].tolist() == [4, 0]  # Real cached keys only.
+    assert args[7].tolist() == [0, 4]  # Skip cached pads.
+    assert kwargs["kv_view"] is kv_view
     mask = backend._cfg_prefill_wrapper_ragged.plan[1]["custom_mask"].reshape(2, 4, 4)
     assert mask[0].all()
     assert not mask[1, 2:, :2].any()
@@ -739,7 +757,7 @@ def test_attention_local_and_cached_pad_masks(modules):
     batch.extend_prefix_lens += 4
     backend.init_forward_metadata(batch)
     assert not backend._cfg_local_left_pad_active
-    assert calls[-1][3].tolist() == [8, 2]
+    assert calls[-1][0][3].tolist() == [8, 2]
     batch.dllm_left_pad_lens.zero_()
     backend.init_forward_metadata(batch)
     assert backend.delegated
@@ -764,13 +782,15 @@ def test_registration_is_model_specific_and_graph_boundary_is_explicit(
             decode=NS(backend="disabled"), prefill=NS(backend="disabled")
         ),
     )
-    modules.bootstrap._validate_cfg_eager(cfg)
+    modules.bootstrap._validate_cfg(cfg)
     cfg.cuda_graph_config.decode.backend = "full"
-    with pytest.raises(ValueError, match="eager execution only"):
-        modules.bootstrap._validate_cfg_eager(cfg)
+    modules.bootstrap._validate_cfg(cfg)
     assert cfg.cuda_graph_config.decode.backend == "full"
+    cfg.cuda_graph_config.prefill.backend = "full"
+    with pytest.raises(ValueError, match="does not support prefill"):
+        modules.bootstrap._validate_cfg(cfg)
     cfg.dllm_algorithm = "LowConfidence"
-    modules.bootstrap._validate_cfg_eager(cfg)  # Text variant unchanged.
+    modules.bootstrap._validate_cfg(cfg)  # Text variant unchanged.
 
 
 @pytest.mark.parametrize("cached", [False, True])

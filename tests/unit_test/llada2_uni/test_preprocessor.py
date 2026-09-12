@@ -214,6 +214,12 @@ def test_cfg_alignment_contract():
         align_cfg_unconditional_input_ids(SimpleNamespace(), [1, 2], [3])
 
 
+def test_longer_cfg_companion_is_deferred_to_request_builder(preprocessor):
+    state = {}
+    preprocessor._set_cfg_branch(state, [1], [2, 3], branch="uncond_img")
+    assert state == {"uncond_img_input_ids": [2, 3], "uncond_img_left_pad_len": 0}
+
+
 def test_edit_patch_order_and_float32_normalization():
     pixels = np.arange(8 * 8 * 3, dtype=np.uint8).reshape(8, 8, 3)
     output = edit_image_pixel_values(
