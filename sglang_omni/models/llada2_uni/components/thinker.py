@@ -303,7 +303,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
                 # Fork after the clone and join before addition/allreduce.
                 self.alt_stream.wait_stream(torch.cuda.current_stream())
                 with torch.cuda.stream(self.alt_stream):
-                    shared_output = self.shared_experts(identity)
+                    shared_output = self.shared_experts(identity).float()
 
         # Router scores via sigmoid (not softmax like standard MoE)
         router_logits = self.gate(hidden_states)
@@ -335,18 +335,19 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             router_logits=router_logits,
         )
         y = self.experts(hidden_states, topk_output)
+        output_dtype = y.dtype
 
         # Add shared expert output
         if shared_output is not None:
             torch.cuda.current_stream().wait_stream(self.alt_stream)
-            y = y + shared_output
+            y = y.float() + shared_output
         elif self.shared_experts is not None:
-            y = y + self.shared_experts(identity)
+            y = y.float() + self.shared_experts(identity).float()
 
-        # Both expert paths produce rank-local partials. Preserve their dtype.
+        # Sum shared/routed partials and reduce in FP32 before restoring dtype.
         if self.tp_size > 1:
             y = tensor_model_parallel_all_reduce(y)
-        return y
+        return y.to(output_dtype)
 
     def _group_limited_topk(
         self, scores: torch.Tensor

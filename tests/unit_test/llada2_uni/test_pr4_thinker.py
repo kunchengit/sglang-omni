@@ -101,7 +101,7 @@ def config(**overrides):
 @pytest.mark.parametrize("tp_size", [1, 2, 4])
 @pytest.mark.parametrize("shared", [0, 1])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
-def test_partial_experts_reduce_once_without_precision_promotion(
+def test_partial_experts_reduce_once_with_fp32_shared_sum(
     thinker, monkeypatch, tp_size, shared, dtype
 ):
     calls = []
@@ -129,8 +129,11 @@ def test_partial_experts_reduce_once_without_precision_promotion(
     torch.testing.assert_close(output, expected_partial * tp_size, rtol=0, atol=0)
     assert output.dtype == dtype and len(calls) == (1 if tp_size > 1 else 0)
     if calls:
-        assert calls[0].dtype == dtype
-        torch.testing.assert_close(calls[0], expected_partial, rtol=0, atol=0)
+        reduce_dtype = torch.float32 if shared else dtype
+        assert calls[0].dtype == reduce_dtype
+        torch.testing.assert_close(
+            calls[0], expected_partial.to(reduce_dtype), rtol=0, atol=0
+        )
     route = block.experts.routing
     assert route.router_logits.dtype == torch.float32
     scores = route.router_logits.sigmoid().gather(1, route.topk_ids)
