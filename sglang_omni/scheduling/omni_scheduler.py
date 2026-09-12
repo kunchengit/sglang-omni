@@ -61,7 +61,11 @@ from sglang_omni.proto.admin import (
     ADMIN_WEIGHTS_CHECKER,
 )
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
-from sglang_omni.scheduling.types import ARRequestData, DeferredAdmission
+from sglang_omni.scheduling.types import (
+    ARRequestData,
+    DeferredAdmission,
+    ParallelSchedulerCapabilities,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +215,9 @@ class OmniScheduler:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
         self.requires_tp_work_fanout: bool = False
+        self.parallel_capabilities = ParallelSchedulerCapabilities(
+            synchronize_abort=True
+        )
 
         # --- Request builder: StagePayload → SGLangARRequestData ----------
         self._request_builder = request_builder
@@ -828,6 +835,9 @@ class OmniScheduler:
         recv_msgs = self._recv_scheduler_messages()
         new_reqs: list = []
         for msg in recv_msgs:
+            if msg.type == "abort":
+                self.abort(msg.request_id)
+                continue
             if msg.request_id in self._aborted_request_ids:
                 continue
 
@@ -1809,6 +1819,13 @@ class OmniScheduler:
             return
         executor.shutdown(wait=False, cancel_futures=True)
         self._request_build_executor = None
+
+    def propagate_abort(self, request_id: str) -> None:
+        """Serialize cancellation through the existing scheduler TP broadcast."""
+        if self.tp_size == 1:
+            self.abort(request_id)
+        elif self.is_entry_rank:
+            self.inbox.put(IncomingMessage(request_id=request_id, type="abort"))
 
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
         with self._request_admission_lock:

@@ -18,6 +18,7 @@ import time
 from typing import Any, Awaitable, Callable
 
 from sglang_omni.scheduling.messages import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.types import ParallelSchedulerCapabilities
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,10 @@ class SimpleScheduler:
     Streaming stages should provide a dedicated scheduler implementation
     (for example ``Code2WavScheduler``) rather than rely on SimpleScheduler.
     """
+
+    parallel_capabilities = ParallelSchedulerCapabilities(
+        fanout_work=True, drain_aborted_work=True
+    )
 
     def __init__(
         self,
@@ -70,9 +75,26 @@ class SimpleScheduler:
         self._shutdown_callback = shutdown_callback
         self._shutdown_lock = threading.Lock()
         self._aborted: set[str] = set()
+        self._draining_aborts: set[tuple[str, int]] = set()
         self._abort_lock = threading.Lock()
         self._running = False
         self._pending_messages: collections.deque[IncomingMessage] = collections.deque()
+
+    def validate_sequence_parallel(self) -> None:
+        if self._max_concurrency != 1 or self._max_batch_size != 1:
+            raise ValueError("SP SimpleScheduler requires serial, unbatched execution")
+
+    def mark_request_aborted_for_drain(self, request_id: str, dispatch_id: int) -> None:
+        with self._abort_lock:
+            self._draining_aborts.add((request_id, dispatch_id))
+
+    def acknowledge_request_terminal(self, request_id: str, dispatch_id: int) -> None:
+        with self._abort_lock:
+            key = (request_id, dispatch_id)
+            if key not in self._draining_aborts:
+                return
+            self._draining_aborts.remove(key)
+        self._cleanup_aborted_request(request_id)
 
     def _cleanup_aborted_request(self, request_id: str) -> None:
         if self._abort_callback is None:

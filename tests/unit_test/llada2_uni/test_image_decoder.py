@@ -145,11 +145,11 @@ def test_config_metadata_is_not_forwarded(tiny_config):
         _decoder_config(dict(tiny_config, unsupported_architecture=True))
 
 
-@pytest.mark.parametrize("backend", ["sglang", "auto", "missing", None])
-def test_only_explicit_diffusers_backend(tmp_path, backend):
-    with pytest.raises(ValueError, match="only backend='diffusers'"):
+@pytest.mark.parametrize("backend", ["auto", "missing", None])
+def test_only_explicit_supported_backend(tmp_path, backend):
+    with pytest.raises(ValueError, match="Unsupported image decoder backend"):
         LLaDA2ImageDecoder(str(tmp_path), device="cpu", backend=backend)
-    with pytest.raises(ValueError, match="only backend='diffusers'"):
+    with pytest.raises(ValueError, match="Unsupported image decoder backend"):
         ZImageTransformer2DModelWrapper(
             tmp_path, {}, "cpu", torch.float32, backend=backend
         )
@@ -175,6 +175,12 @@ def test_constructor_contract_and_hf_resolution(monkeypatch, tmp_path):
         "num_steps",
         "resolution_multiplier",
         "backend",
+        "stage_role",
+        "sp_rank",
+        "sp_size",
+        "ulysses_degree",
+        "ring_degree",
+        "attention_backend",
     ]
 
 

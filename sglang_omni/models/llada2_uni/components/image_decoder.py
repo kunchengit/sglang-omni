@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import nullcontext
 from typing import Any
 
 import torch
@@ -17,6 +18,10 @@ from torchvision.transforms.functional import to_pil_image
 
 from sglang_omni.models.llada2_uni.components.decoder_model import (
     ZImageTransformer2DModelWrapper,
+)
+from sglang_omni.models.llada2_uni.components.decoder_parallel import (
+    DecoderParallelConfig,
+    SGLangDecoderRuntime,
 )
 from sglang_omni.models.llada2_uni.components.sigvq import SigVQ
 from sglang_omni.models.llada2_uni.components.transport import Sampler, create_transport
@@ -86,8 +91,14 @@ class LLaDA2ImageDecoder:
             when :meth:`decode` is called without an explicit ``decode_mode``.
         num_steps: Default number of ODE sampling steps.
         resolution_multiplier: Default upscale factor (2 = 1024px from 512px tokens).
-        backend: Only ``diffusers`` (default) is supported.
-            Native SGLang and sequence parallelism are not implemented here.
+        backend: ``diffusers`` (default, single-rank) or explicitly ``sglang``.
+        stage_role: ``single`` for SP1, otherwise rank zero is ``leader`` and
+            the other ranks are ``follower``. Only the leader returns an image.
+        sp_rank, sp_size, ulysses_degree, ring_degree: Must match the external
+            stage runtime, with TP=1 and sp_size=ulysses_degree*ring_degree.
+        attention_backend: Explicit native attention selection; no fallback.
+            The caller must initialize diffusion groups, server args and dtype
+            before constructing a native decoder. This object owns no groups.
     """
 
     def __init__(
@@ -100,13 +111,33 @@ class LLaDA2ImageDecoder:
         resolution_multiplier: int = 2,
         *,
         backend: str = "diffusers",
+        stage_role: str = "single",
+        sp_rank: int = 0,
+        sp_size: int = 1,
+        ulysses_degree: int = 1,
+        ring_degree: int = 1,
+        attention_backend: str = "torch_sdpa",
     ):
-        if backend != "diffusers":
-            raise ValueError("Image decoding supports only backend='diffusers'")
+        self.parallel_config = DecoderParallelConfig(
+            backend=backend,
+            stage_role=stage_role,
+            sp_rank=sp_rank,
+            sp_size=sp_size,
+            ulysses_degree=ulysses_degree,
+            ring_degree=ring_degree,
+            attention_backend=attention_backend,
+        )
         self._validate_settings(decode_mode, num_steps, resolution_multiplier)
         self.backend = backend
         self.device = torch.device(device)
         self.dtype = dtype
+        self._parallel_runtime = (
+            SGLangDecoderRuntime(self.parallel_config, self.device, dtype)
+            if backend == "sglang"
+            else None
+        )
+        if self._parallel_runtime is not None:
+            self.device = self._parallel_runtime.device
         self.model_path = str(resolve_model_path(model_path))
         self.decode_mode = decode_mode
         self.num_steps = num_steps
@@ -117,6 +148,17 @@ class LLaDA2ImageDecoder:
         self._diff_model_mode: str | None = None
         self._vae: AutoencoderKL | None = None
         self._diff_config: dict | None = None
+
+    @property
+    def is_leader(self):
+        return self.parallel_config.is_leader
+
+    def _preparation(self, phase):
+        return (
+            self._parallel_runtime.preparation(phase)
+            if self._parallel_runtime
+            else nullcontext()
+        )
 
     @staticmethod
     def _validate_settings(mode, steps, resolution_multiplier):
@@ -182,6 +224,11 @@ class LLaDA2ImageDecoder:
             device=self.device,
             dtype=self.dtype,
             backend=self.backend,
+            **(
+                {"parallel_runtime": self._parallel_runtime}
+                if self._parallel_runtime
+                else {}
+            ),
         )
         self._diff_model = model
         self._diff_config = cfg
@@ -228,10 +275,11 @@ class LLaDA2ImageDecoder:
             num_steps: Override default ODE step count.
             resolution_multiplier: Override default upscale factor.
             seed: If set, draws initial noise with a deterministic generator.
-                If ``None``, each call gets fresh randomness from the global RNG.
+                If ``None``, SP1 uses the global RNG; SP workers share a fresh
+                leader-selected seed for initial noise and stochastic sampling.
 
         Returns:
-            PIL.Image.Image
+            PIL.Image.Image on the single/leader rank; None on followers.
         """
         mode = decode_mode if decode_mode is not None else self.decode_mode
         steps = num_steps if num_steps is not None else self.num_steps
@@ -240,27 +288,45 @@ class LLaDA2ImageDecoder:
             if resolution_multiplier is not None
             else self.resolution_multiplier
         )
-        self._validate_settings(mode, steps, rmul)
-        if not isinstance(h, int) or not isinstance(w, int) or h < 1 or w < 1:
-            raise ValueError("Image decoder grid dimensions must be positive integers")
-        if len(token_ids) != h * w:
-            raise ValueError("Image decoder requires exactly h * w VQ tokens")
-        if any(not isinstance(i, int) or not 0 <= i < 16384 for i in token_ids):
-            raise ValueError(
-                "Image decoder VQ token IDs must be integers in [0, 16383]"
-            )
+        with self._preparation("request validation"):
+            self._validate_settings(mode, steps, rmul)
+            if not isinstance(h, int) or not isinstance(w, int) or h < 1 or w < 1:
+                raise ValueError(
+                    "Image decoder grid dimensions must be positive integers"
+                )
+            if len(token_ids) != h * w:
+                raise ValueError("Image decoder requires exactly h * w VQ tokens")
+            if any(not isinstance(i, int) or not 0 <= i < 16384 for i in token_ids):
+                raise ValueError(
+                    "Image decoder VQ token IDs must be integers in [0, 16383]"
+                )
+        if self._parallel_runtime:
+            seed = self._parallel_runtime.request_seed((h, w, mode, steps, rmul), seed)
 
         # Stage 1: SigVQ -> semantic features
-        self._ensure_sigvq()
         th = h * 16 * rmul
         tw = w * 16 * rmul
-        tok = torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
-        up = F.interpolate(tok, scale_factor=2, mode="nearest").long().view(1, -1)
-        cap_pos = [self._sigvq(up).squeeze(0)]
+        with self._preparation("weight loading and conditioning"):
+            if self.is_leader:
+                self._ensure_sigvq()
+                tok = torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
+                up = (
+                    F.interpolate(tok, scale_factor=2, mode="nearest")
+                    .long()
+                    .view(1, -1)
+                )
+                features = self._sigvq(up).squeeze(0).contiguous()
+            else:
+                features = torch.empty(
+                    (4 * h * w, 4096), device=self.device, dtype=self.dtype
+                )
+            self._ensure_diff_model(mode)
+        if self._parallel_runtime:
+            features = self._parallel_runtime.broadcast_features(features)
+        cap_pos = [features]
         cap_neg = [torch.zeros_like(cap_pos[0])]
 
         # Stage 2: Diffusion ODE sampling
-        self._ensure_diff_model(mode)
         cfg = self._diff_config
         noise_shape = [1, 16, 1, 2 * (th // 16), 2 * (tw // 16)]
         if seed is not None:
@@ -293,12 +359,17 @@ class LLaDA2ImageDecoder:
         samples = sample_fn(z, model_fn)[-1].squeeze(2)
 
         # Stage 3: VAE decode
-        self._ensure_vae()
-        s = samples.to(self.dtype)
-        s = (s / self._vae.config.scaling_factor) + self._vae.config.shift_factor
-        px = ((self._vae.decode(s, return_dict=False)[0] + 1) / 2).clamp_(0, 1)
-
-        return to_pil_image(px[0].float())
+        image = None
+        with self._preparation("VAE decoding"):
+            if self.is_leader:
+                self._ensure_vae()
+                s = samples.to(self.dtype)
+                s = (
+                    s / self._vae.config.scaling_factor
+                ) + self._vae.config.shift_factor
+                px = ((self._vae.decode(s, return_dict=False)[0] + 1) / 2).clamp_(0, 1)
+                image = to_pil_image(px[0].float())
+        return image
 
     @torch.inference_mode()
     def decode_to_bytes(
@@ -308,7 +379,7 @@ class LLaDA2ImageDecoder:
         w: int,
         format: str = "PNG",
         **decode_kwargs: Any,
-    ) -> bytes:
+    ) -> bytes | None:
         """Decode VQ token IDs into image bytes.
 
         Args:
@@ -320,11 +391,13 @@ class LLaDA2ImageDecoder:
                 resolution_multiplier, seed).
 
         Returns:
-            Image bytes.
+            Image bytes on the single/leader rank; None on followers.
         """
         import io
 
         image = self.decode(token_ids, h, w, **decode_kwargs)
+        if image is None:
+            return None
         buf = io.BytesIO()
         image.save(buf, format=format)
         return buf.getvalue()
