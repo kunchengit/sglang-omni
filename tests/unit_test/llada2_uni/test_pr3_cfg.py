@@ -364,9 +364,7 @@ def test_pr4_tp_idle_admission_has_no_collective(modules, monkeypatch):
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_pr4_decode_reference_precision_and_explicit_failure(
-    modules, monkeypatch, dtype
-):
+def test_pr4_decode_reference_precision(modules, dtype):
     config = NS(
         block_size=4, mask_id=9, first_done_first_out_mode=False, algorithm_config={}
     )
@@ -378,19 +376,6 @@ def test_pr4_decode_reference_precision_and_explicit_failure(
     )
     torch.testing.assert_close(confidence, expected, rtol=0, atol=0)
     assert confidence.dtype == dtype and ids.tolist() == [2, 0]
-    kernel = ModuleType("sglang_omni.models.llada2_uni.algorithm.triton_decode")
-
-    def fail(_):
-        raise RuntimeError("kernel launch failed")
-
-    kernel.argmax_confidence_triton = fail
-    monkeypatch.setitem(sys.modules, kernel.__name__, kernel)
-    algorithm.decode_backend = "triton"
-    with pytest.raises(RuntimeError, match="kernel launch failed"):
-        algorithm._argmax_confidence(logits)
-    config.algorithm_config = {"decode_backend": "automatic"}
-    with pytest.raises(ValueError, match="decode_backend"):
-        modules.algo.LowConfidenceCFG(config)
 
 
 def test_pr4_bootstrap_forwards_tp_and_total_memory_budget(modules, monkeypatch):
@@ -455,21 +440,7 @@ def track(scheduler, reqs):
 
 @pytest.mark.parametrize("size", [1, 2, 3])
 @pytest.mark.parametrize("rescale", [0.0, 0.7])
-@pytest.mark.parametrize("decode_backend", ["torch", "triton"])
-def test_guidance_and_five_field_contract(
-    modules, monkeypatch, size, rescale, decode_backend
-):
-    kernel_calls = []
-    if decode_backend == "triton":
-        kernel = ModuleType("sglang_omni.models.llada2_uni.algorithm.triton_decode")
-
-        def primitive(logits):
-            kernel_calls.append(logits.clone())
-            ids = logits.argmax(-1)
-            return ids, logits.softmax(-1).gather(-1, ids[:, None]).squeeze(-1)
-
-        kernel.argmax_confidence_triton = primitive
-        monkeypatch.setitem(sys.modules, kernel.__name__, kernel)
+def test_guidance_and_five_field_contract(modules, size, rescale):
     config = NS(
         block_size=4,
         mask_id=9,
@@ -477,7 +448,6 @@ def test_guidance_and_five_field_contract(
         algorithm_config={
             "threshold": 1.0,
             "image_token_offset": 3,
-            "decode_backend": decode_backend,
         },
     )
     algorithm = modules.algo.LowConfidenceCFG(config)
@@ -524,26 +494,12 @@ def test_guidance_and_five_field_contract(
     assert all(row.tolist() == [expected.argmax().item()] * 3 for row in result[1])
     assert all(not (row == 9).any() for row in result[1])
     assert len(calls) >= 2
-    if decode_backend == "triton":
-        assert kernel_calls
-        assert all(torch.isneginf(logits[:, :3]).all() for logits in kernel_calls)
     if size > 1:
         assert ids[4].item() == 9
 
 
 @pytest.mark.parametrize("size", [1, 2, 3])
-@pytest.mark.parametrize("decode_backend", ["torch", "triton"])
-def test_interleaved_eoi_remains_selectable_in_image_cfg(
-    modules, monkeypatch, size, decode_backend
-):
-    kernel = ModuleType("sglang_omni.models.llada2_uni.algorithm.triton_decode")
-
-    def argmax(logits):
-        ids = logits.argmax(-1)
-        return ids, logits.softmax(-1).gather(-1, ids[:, None]).squeeze(-1)
-
-    kernel.argmax_confidence_triton = argmax
-    monkeypatch.setitem(sys.modules, kernel.__name__, kernel)
+def test_interleaved_eoi_remains_selectable_in_image_cfg(modules, size):
     algorithm = modules.algo.LowConfidenceCFG(
         NS(
             block_size=4,
@@ -551,7 +507,6 @@ def test_interleaved_eoi_remains_selectable_in_image_cfg(
             first_done_first_out_mode=False,
             algorithm_config={
                 "image_token_offset": 3,
-                "decode_backend": decode_backend,
             },
         )
     )

@@ -26,7 +26,7 @@ def test_existing_typed_tp_and_memory_configuration(tp_size):
         gpu_memory_fraction=0.7,
     )
     thinker["engine"]["json_model_override_args"] = (
-        '{"llada2_router_topk_backend":"triton"}'
+        '{"router_dtype":"fp32"}'
     )
     thinker["factory"]["dllm_algorithm_config"] = "/tmp/pr4-decode.yaml"
     rebuilt = LLaDA2UniOmniPipelineConfig.model_validate(data)

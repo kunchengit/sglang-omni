@@ -152,23 +152,6 @@ def test_quant_config_reaches_attention_and_embedding(thinker):
     assert model.word_embeddings.kwargs["quant_config"] is quant
 
 
-def test_router_backend_is_explicit_and_never_falls_back(thinker, monkeypatch):
-    with pytest.raises(ValueError, match="llada2_router_topk_backend"):
-        thinker.LLaDA2MoeSparseMoeBlock(config(llada2_router_topk_backend="auto"), 0)
-    block = thinker.LLaDA2MoeSparseMoeBlock(
-        config(llada2_router_topk_backend="triton"), 0
-    )
-    module = ModuleType("sglang_omni.models.llada2_uni.components.triton_topk")
-
-    def fail(*_):
-        raise RuntimeError("topk launch failed")
-
-    module.grouped_topk_triton = fail
-    monkeypatch.setitem(sys.modules, module.__name__, module)
-    with pytest.raises(RuntimeError, match="topk launch failed"):
-        block._group_limited_topk(torch.ones(1, 8))
-
-
 @pytest.mark.parametrize("capture", [False, True])
 def test_shared_expert_overlap_forks_and_joins_only_in_capture(
     thinker, monkeypatch, capture

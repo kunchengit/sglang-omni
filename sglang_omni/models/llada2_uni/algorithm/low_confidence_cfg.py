@@ -93,9 +93,6 @@ class LowConfidenceCFG(DllmAlgorithm):
         if self.fdfo:
             raise ValueError("LowConfidenceCFG requires synchronous DLLM, not FDFO")
         self.threshold = config.algorithm_config.get("threshold", 0.95)
-        self.decode_backend = config.algorithm_config.get("decode_backend", "torch")
-        if self.decode_backend not in ("torch", "triton"):
-            raise ValueError("decode_backend must be 'torch' or 'triton'")
         self.image_token_offset = config.algorithm_config.get(
             "image_token_offset", 157184
         )
@@ -110,12 +107,6 @@ class LowConfidenceCFG(DllmAlgorithm):
             logits[:, : self.image_token_offset] = float("-inf")
             if allowed is not None:
                 logits[:, allowed_token_ids] = allowed
-        if self.decode_backend == "triton":
-            from sglang_omni.models.llada2_uni.algorithm.triton_decode import (
-                argmax_confidence_triton,
-            )
-
-            return argmax_confidence_triton(logits)
         ids = torch.argmax(logits, dim=-1)
         confidence = F.softmax(logits, dim=-1).gather(-1, ids.unsqueeze(-1))
         return ids, confidence.squeeze(-1)

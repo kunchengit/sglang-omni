@@ -241,11 +241,6 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         self.topk_group = config.topk_group
         self.routed_scaling_factor = config.routed_scaling_factor
         self.tp_size = get_tensor_model_parallel_world_size()
-        self.router_topk_backend = getattr(
-            config, "llada2_router_topk_backend", "torch"
-        )
-        if self.router_topk_backend not in ("torch", "triton"):
-            raise ValueError("llada2_router_topk_backend must be 'torch' or 'triton'")
 
         # Gate always runs at half / full precision for now.
         router_dtype = getattr(config, "router_dtype", None)
@@ -353,15 +348,6 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         self, scores: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Group-limited top-k expert selection."""
-        if self.router_topk_backend == "triton":
-            from sglang_omni.models.llada2_uni.components.triton_topk import (
-                grouped_topk_triton,
-            )
-
-            return grouped_topk_triton(
-                scores, self.num_experts_per_tok, self.n_group, self.topk_group
-            )
-
         num_tokens = scores.shape[0]
         experts_per_group = self.num_experts // self.n_group
 
