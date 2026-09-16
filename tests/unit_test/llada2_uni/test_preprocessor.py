@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import json
 import re
 from types import SimpleNamespace
 from typing import ClassVar
@@ -99,6 +100,35 @@ def run_preprocessor(
     result = asyncio.run(processor(payload))
     assert result.request is payload.request
     return LLaDA2UniPipelineState.from_dict(result.data)
+
+
+def test_checkpoint_processor_config_keeps_one_vq_per_patch(tmp_path, monkeypatch):
+    from sglang_omni.models.llada2_uni.components import preprocessor as module
+
+    directory = tmp_path / "image_tokenizer"
+    directory.mkdir()
+    config = {
+        "image_processor_type": "Qwen2VLImageProcessor",
+        "patch_size": 16,
+        "temporal_patch_size": 1,
+        "merge_size": 1,
+        "image_mean": [0.5] * 3,
+        "image_std": [0.5] * 3,
+    }
+    (directory / "preprocessor_config.json").write_text(json.dumps(config))
+    monkeypatch.setattr(module, "resolve_local_model_dir", lambda _: str(tmp_path))
+    monkeypatch.setattr(module, "load_llada2_tokenizer", lambda _: Tokenizer())
+    processor = LLaDA2Preprocessor(str(tmp_path))
+    image = Image.fromarray(
+        np.random.default_rng(42).integers(0, 256, (512, 512, 3), dtype=np.uint8)
+    )
+    state = run_preprocessor(processor, generation={"dllm_steps": 8}, images=[image])
+    assert state.stream_state["image_info"] == [{"grid_h": 32, "grid_w": 32}]
+    assert processor._image_processor.merge_size == 1
+    assert (
+        json.loads((directory / "preprocessor_config.json").read_text())["merge_size"]
+        == 1
+    )
 
 
 def test_chat_uses_pr3_prerequisite_system_prompt(preprocessor):
@@ -260,6 +290,16 @@ def test_edit_crop_is_deterministic_and_within_budget():
     assert first.size == second.size
     assert first.size[0] * first.size[1] <= 512**2
     assert all(size % 16 == 0 for size in first.size)
+
+
+@pytest.mark.parametrize("side", [64, 512, 1024])
+def test_edit_matching_aspect_preserves_full_source(side):
+    pixels = np.random.default_rng(7).integers(0, 256, (side, side, 3), dtype=np.uint8)
+    image = Image.fromarray(pixels)
+    actual = preprocess_image_edit([image], 16)[0]
+    expected = image.resize((512, 512), Image.Resampling.LANCZOS)
+    assert actual.size == (512, 512)
+    np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
 
 
 def test_mmu_placeholder_count_is_raw_patch_count(preprocessor):

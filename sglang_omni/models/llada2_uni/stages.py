@@ -120,6 +120,7 @@ def create_sglang_dllm_thinker_executor_from_config(
 
         register_llada2_uni_cfg()
         overrides["attention_backend"] = CFG_ATTENTION_BACKEND
+        overrides["dllm_fdfo"] = False
     overrides.update(server_args_overrides or {})
     if tp_size < 1 or not 0 <= tp_rank < tp_size:
         raise ValueError("thinker requires tp_size >= 1 and 0 <= tp_rank < tp_size")

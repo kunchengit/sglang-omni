@@ -807,7 +807,9 @@ def _register_chat_completions(app: FastAPI) -> None:
 def _requested_output_modalities(req: ChatCompletionRequest) -> list[str]:
     if req.modalities is not None:
         return req.modalities
-    return ["text", "image"] if req.interleaved_generation is not None else ["text"]
+    if req.interleaved_generation is not None or req.image_generation is not None:
+        return ["text", "image"]
+    return ["text"]
 
 
 def _filter_content_parts(

@@ -28,6 +28,7 @@ class InterleavedGenerationConfig:
 
     max_frames: int = 10
     text_max_new_tokens: int = 8192
+    image_max_new_tokens: int = 1500
     dllm_steps: int = 32
     cfg_scale: float = 0.0
     cfg_text_scale: float = 7.5
@@ -47,6 +48,9 @@ class InterleavedGenerationConfig:
             max_frames=int(raw.get("max_frames", cls.max_frames)),
             text_max_new_tokens=int(
                 raw.get("text_max_new_tokens", cls.text_max_new_tokens)
+            ),
+            image_max_new_tokens=int(
+                raw.get("image_max_new_tokens", cls.image_max_new_tokens)
             ),
             dllm_steps=int(raw.get("dllm_steps", cls.dllm_steps)),
             cfg_scale=float(raw.get("cfg_scale", cls.cfg_scale)),
@@ -69,6 +73,8 @@ class InterleavedGenerationConfig:
             raise ValueError("interleaved max_frames must be positive")
         if self.text_max_new_tokens <= 0:
             raise ValueError("interleaved text_max_new_tokens must be positive")
+        if self.image_max_new_tokens <= 0:
+            raise ValueError("interleaved image_max_new_tokens must be positive")
         if self.dllm_steps <= 0:
             raise ValueError("interleaved dllm_steps must be positive")
         if not 0.0 <= self.cfg_rescale <= 1.0:
@@ -195,20 +201,6 @@ def build_cfg_plan(
 ) -> CFGBranchPlan:
     """Build disabled, simple, or editing CFG branches for an image frame."""
 
-    if (
-        config.cfg_scale <= 0.0
-        and config.cfg_text_scale <= 0.0
-        and config.cfg_image_scale <= 0.0
-    ):
-        return CFGBranchPlan(
-            mode="none",
-            branches={},
-            cfg_scale=0.0,
-            cfg_text_scale=0.0,
-            cfg_image_scale=0.0,
-            cfg_rescale=config.cfg_rescale,
-        )
-
     uncond_base = tokenizer.encode(
         f"<role>SYSTEM</role> {SYSTEM_PROMPT_INTERLEAVED} "
         f"<role>HUMAN</role>{UNCONDITION_TOKEN}<role>ASSISTANT</role>",
@@ -222,37 +214,38 @@ def build_cfg_plan(
         if token_id == eoi_id
     ]
 
-    if frame_index > 0 and eoi_positions:
+    use_editing_cfg = config.cfg_text_scale > 0.0 or config.cfg_image_scale > 0.0
+    if use_editing_cfg and frame_index > 0 and eoi_positions:
         last_eoi = eoi_positions[-1]
         history_context = full_ids[: last_eoi + 1]
         current_text = full_ids[last_eoi + 1 : len(full_ids) - len(image_suffix)]
         uncondition_ids = tokenizer.encode(UNCONDITION_TOKEN, add_special_tokens=False)
         no_text_ids = history_context + uncondition_ids + image_suffix
-        if config.cfg_image_scale > 0.0:
-            return CFGBranchPlan(
-                mode="editing",
-                branches={
-                    "no_text": no_text_ids,
-                    "no_image": uncond_base + current_text + image_suffix,
-                },
-                cfg_scale=1.0,
-                cfg_text_scale=config.cfg_text_scale,
-                cfg_image_scale=config.cfg_image_scale,
-                cfg_rescale=config.cfg_rescale,
-            )
-        if config.cfg_text_scale > 0.0:
-            return CFGBranchPlan(
-                mode="simple",
-                branches={"uncond": no_text_ids},
-                cfg_scale=config.cfg_text_scale,
-                cfg_text_scale=0.0,
-                cfg_image_scale=0.0,
-                cfg_rescale=config.cfg_rescale,
-            )
+        return CFGBranchPlan(
+            mode="editing",
+            branches={
+                "no_text": no_text_ids,
+                "no_image": uncond_base + current_text + image_suffix,
+            },
+            cfg_scale=1.0,
+            cfg_text_scale=config.cfg_text_scale,
+            cfg_image_scale=config.cfg_image_scale,
+            cfg_rescale=config.cfg_rescale,
+        )
 
     effective_scale = (
         config.cfg_scale if config.cfg_scale > 0 else config.cfg_text_scale
     )
+    # HF skips simple CFG at scale=1, not at scale=0 (unconditional logits).
+    if effective_scale == 1.0:
+        return CFGBranchPlan(
+            mode="none",
+            branches={},
+            cfg_scale=1.0,
+            cfg_text_scale=0.0,
+            cfg_image_scale=0.0,
+            cfg_rescale=config.cfg_rescale,
+        )
     return CFGBranchPlan(
         mode="simple",
         branches={"uncond": uncond_base + image_suffix},

@@ -159,7 +159,9 @@ class LLaDA2UniInterleavedPipelineConfig(LLaDA2UniPipelineConfig):
             process=THINKER_STAGE,
             factory_path=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
             factory=FactoryArgs(max_seq_len=8192, dllm_algorithm="LowConfidenceCFG"),
-            engine=EngineArgs(mem_fraction_static=0.75),
+            # Keep three-way image CFG at its eager batch shape instead of
+            # padding it to four rows, which can change MoE numerics.
+            engine=EngineArgs(mem_fraction_static=0.75, cuda_graph_bs=[1, 2, 3, 4]),
             gpu=0,
             next=[THINKER_STAGE, IMAGE_DECODE_STAGE, INTERLEAVED_COLLECT_STAGE],
             route_fn=f"{_PKG}.routing.thinker_next",

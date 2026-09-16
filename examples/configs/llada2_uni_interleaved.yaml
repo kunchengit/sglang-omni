@@ -5,6 +5,8 @@ stages:
   thinker:
     engine:
       disable_cuda_graph: false
+      # Capture three-way CFG without padding the batch to four requests.
+      cuda_graph_bs: [1, 2, 3, 4]
   image_decode:
     factory:
       backend: diffusers

@@ -147,7 +147,7 @@ def test_scheduler_adapters_roundtrip_two_frames_and_cfg_phases():
         assert image.req._interleaved_phase == "image"
         assert image.req._dllm_steps == 8
         assert image.req.eos_token_ids == {tokenizer.EOI}
-        assert image.req.sampling_params.max_new_tokens == 5
+        assert image.req.sampling_params.max_new_tokens == 1500
         assert len(image.req.origin_input_ids) == len(image.req._uncond_input_ids)
         assert hasattr(image.req, "_uncond_img_input_ids") == (frame == 2)
         if frame == 2:
@@ -195,10 +195,64 @@ def test_cfg_plan_matches_reference_first_and_later_frame_conditions():
     assert later.branches["no_image"] == [900, 30, 31] + suffix
 
 
-def test_cfg_plan_skips_companions_when_all_scales_are_disabled() -> None:
+def test_image_budget_survives_api_and_partial_phase_reentry():
+    from sglang_omni.serve.protocol import InterleavedGenerationParams
+
+    tokenizer = _Tokenizer()
+    metadata = {
+        "interleaved_generation": InterleavedGenerationParams(
+            image_max_new_tokens=1600
+        ).model_dump()
+    }
+    config = InterleavedGenerationConfig.from_metadata(metadata)
+    state = LLaDA2UniPipelineState(
+        prompt={"input_ids": torch.tensor([[10, 11]])},
+        task_kind="interleaved",
+        request_metadata=metadata,
+        stream_state=config.to_stream_state(prompt_length=2, max_seq_len=8192),
+    )
+    build, adapt = make_dllm_thinker_scheduler_adapters(
+        tokenizer=tokenizer,
+        vocab_size=IMAGE_TOKEN_OFFSET + 8192,
+        dllm_config=SimpleNamespace(block_size=32, mask_id=99),
+    )
+    text = build(_payload(state))
+    text.output_ids = [tokenizer.SOI, tokenizer.HEIGHT, tokenizer.WIDTH, tokenizer.BOI]
+    image = build(adapt(text))
+    assert image.req.sampling_params.max_new_tokens == 1600
+    image.output_ids = [IMAGE_TOKEN_OFFSET, IMAGE_TOKEN_OFFSET + 1]
+    continuation = build(adapt(image))
+    assert continuation.req.sampling_params.max_new_tokens == 1598
+
+
+def test_image_grid_must_fit_generation_budget_including_eoi():
+    tokenizer = _Tokenizer()
+    metadata = _metadata(image_max_new_tokens=4)
+    state = LLaDA2UniPipelineState(
+        prompt={"input_ids": torch.tensor([[10]])},
+        task_kind="interleaved",
+        request_metadata=metadata,
+        stream_state=InterleavedGenerationConfig.from_metadata(
+            metadata
+        ).to_stream_state(prompt_length=1, max_seq_len=8192),
+        thinker_out={
+            "output_ids": [
+                tokenizer.SOI,
+                tokenizer.HEIGHT,
+                tokenizer.WIDTH,
+                tokenizer.BOI,
+            ]
+        },
+    )
+    with pytest.raises(ValueError, match="budget cannot fit"):
+        _advance_interleaved_state(state, tokenizer, completed_phase="text")
+
+
+@pytest.mark.parametrize("scale, mode", [(0.0, "simple"), (1.0, "none")])
+def test_cfg_plan_matches_hf_simple_cfg_activation(scale, mode) -> None:
     tokenizer = _Tokenizer()
     config = InterleavedGenerationConfig.from_metadata(
-        _metadata(cfg_scale=0.0, cfg_text_scale=0.0, cfg_image_scale=0.0)
+        _metadata(cfg_scale=scale, cfg_text_scale=0.0, cfg_image_scale=0.0)
     )
     full_ids = [10, tokenizer.SOI, tokenizer.HEIGHT, tokenizer.WIDTH, tokenizer.BOI]
 
@@ -210,11 +264,14 @@ def test_cfg_plan_skips_companions_when_all_scales_are_disabled() -> None:
         config=config,
     )
 
-    assert plan.mode == "none"
-    assert plan.branches == {}
+    assert plan.mode == mode
+    assert plan.cfg_scale == scale
+    assert bool(plan.branches) == (scale != 1.0)
 
 
-def test_cfg_plan_uses_two_branches_when_later_frame_disables_image_guidance() -> None:
+def test_cfg_plan_keeps_three_branches_when_later_frame_disables_image_guidance() -> (
+    None
+):
     tokenizer = _Tokenizer()
     config = InterleavedGenerationConfig.from_metadata(
         _metadata(cfg_scale=0.0, cfg_text_scale=4.0, cfg_image_scale=0.0)
@@ -230,9 +287,11 @@ def test_cfg_plan_uses_two_branches_when_later_frame_disables_image_guidance() -
         config=config,
     )
 
-    assert plan.mode == "simple"
-    assert plan.branches["uncond"] == [20, tokenizer.EOI, tokenizer.UNCOND] + suffix
-    assert plan.cfg_scale == 4.0
+    assert plan.mode == "editing"
+    assert plan.branches["no_text"] == [20, tokenizer.EOI, tokenizer.UNCOND] + suffix
+    assert plan.branches["no_image"] == [900, 30, 31] + suffix
+    assert plan.cfg_text_scale == 4.0
+    assert plan.cfg_image_scale == 0.0
 
 
 def test_cfg_attachment_aligns_dynamic_and_pre_aligned_branches() -> None:
@@ -531,6 +590,7 @@ def test_interleaved_pipeline_topologies_keep_thinker_and_decoder_disjoint():
     stages = {stage.name: stage for stage in single.stages}
     assert stages[THINKER_STAGE].gpu == 0
     assert stages[THINKER_STAGE].stream_to == []
+    assert stages[THINKER_STAGE].engine.overrides()["cuda_graph_bs"] == [1, 2, 3, 4]
     assert stages[IMAGE_DECODE_STAGE].gpu == 1
     assert stages[IMAGE_DECODE_STAGE].can_accept_stream_before_payload is False
     assert stages[INTERLEAVED_COLLECT_STAGE].terminal is True
@@ -539,6 +599,7 @@ def test_interleaved_pipeline_topologies_keep_thinker_and_decoder_disjoint():
     for stage in raw["stages"]:
         if stage["name"] == THINKER_STAGE:
             stage.update(tp_size=2, gpu=[0, 1])
+            stage["engine"]["cuda_graph_bs"] = [1, 2, 3, 4, 8]
         elif stage["name"] == IMAGE_DECODE_STAGE:
             stage.update(sp_size=2, gpu=[2, 3])
             stage["factory"].update(backend="sglang", ulysses_degree=2)
@@ -546,6 +607,7 @@ def test_interleaved_pipeline_topologies_keep_thinker_and_decoder_disjoint():
     stages = {stage.name: stage for stage in parallel.stages}
     assert stages[THINKER_STAGE].gpu == [0, 1]
     assert stages[THINKER_STAGE].tp_size == 2
+    assert stages[THINKER_STAGE].engine.overrides()["cuda_graph_bs"] == [1, 2, 3, 4, 8]
     assert stages[IMAGE_DECODE_STAGE].gpu == [2, 3]
     assert stages[IMAGE_DECODE_STAGE].sp_size == 2
     assert set(stages[THINKER_STAGE].gpu).isdisjoint(stages[IMAGE_DECODE_STAGE].gpu)
@@ -563,4 +625,5 @@ def test_shipped_yaml_uses_current_config_resolver(name):
     assert stages[IMAGE_DECODE_STAGE].factory.backend == "diffusers"
     if name.endswith("interleaved"):
         assert stages[THINKER_STAGE].engine.disable_cuda_graph is False
+        assert stages[THINKER_STAGE].engine.overrides()["cuda_graph_bs"] == [1, 2, 3, 4]
         assert stages[IMAGE_DECODE_STAGE].gpu == 1

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from PIL import Image
+from PIL import Image, ImageOps
 
 from sglang_omni.models.llada2_uni.components.common import (
     load_llada2_tokenizer,
@@ -198,7 +198,12 @@ def _resize_images(
 
 
 def preprocess_image_edit(images: list[Image.Image], factor: int) -> list[Image.Image]:
-    """Use the reference's deterministic aspect-ratio crop and 512px budget."""
+    """Fit edit inputs to the closest supported grid within a 512px area budget.
+
+    Resize proportionally and center-crop to the selected patch-aligned grid.
+    Unlike a direct crop, this preserves the full source when ratios match;
+    images beyond the supported 4:1 ratio still require centered cropping.
+    """
     num_patches = (512 // factor) ** 2
     candidates = []
     wp, hp = num_patches, 1
@@ -221,9 +226,12 @@ def preprocess_image_edit(images: list[Image.Image], factor: int) -> list[Image.
                 size,
             ),
         )
-        left, top = max(0, (w - cw) // 2), max(0, (h - ch) // 2)
         result.append(
-            img.crop((left, top, left + cw, top + ch)).resize((cw, ch), Image.LANCZOS)
+            img.copy()
+            if img.size == (cw, ch)
+            else ImageOps.fit(
+                img, (cw, ch), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5)
+            )
         )
     return result
 

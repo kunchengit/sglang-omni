@@ -111,7 +111,7 @@ def test_image_config_and_modalities_reach_omni_request(modalities, image_config
     )
     generate = _build_chat_generate_request(req)
     omni = Client._build_omni_request(generate)
-    expected_modalities = ["text"] if modalities is None else modalities
+    expected_modalities = ["text", "image"] if modalities is None else modalities
     assert generate.output_modalities == expected_modalities
     assert omni.metadata["output_modalities"] == expected_modalities
     assert omni.metadata["image_generation"] == image_config
@@ -165,7 +165,7 @@ def test_chat_image_response_uses_ordered_content_and_modality_choices(api, moda
     data = response.json()
     message = data["choices"][0]["message"]
     expected = []
-    requested = modalities if modalities is not None else ["text"]
+    requested = modalities if modalities is not None else ["text", "image"]
     if "text" in requested:
         expected.append({"type": "text", "text": "A red square"})
     if "image" in requested:

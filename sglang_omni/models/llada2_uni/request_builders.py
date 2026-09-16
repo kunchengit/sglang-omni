@@ -175,10 +175,14 @@ def build_dllm_thinker_request(
             raise ValueError("interleaved thinker exhausted its context before EOS")
         max_new_tokens = min(interleaved_config.text_max_new_tokens, available)
     elif interleaved_phase == "image":
-        remaining = int(ss["interleaved_current_frame"]["remaining_image_tokens"])
-        if remaining <= 0:
-            raise ValueError("interleaved image phase has no remaining tokens")
-        max_new_tokens = remaining + 1
+        frame = ss["interleaved_current_frame"]
+        generated = len(frame["vq_tokens"])
+        available = int(ss["interleaved_max_seq_len"]) - len(input_ids_array)
+        max_new_tokens = min(
+            interleaved_config.image_max_new_tokens - generated, available
+        )
+        if max_new_tokens <= 0:
+            raise ValueError("interleaved image phase exhausted its token budget")
 
     sampling_params = SamplingParams(
         max_new_tokens=max_new_tokens,
@@ -487,6 +491,12 @@ def _interleaved_text_to_image_or_done(
 
     max_seq_len = int(state.stream_state.get("interleaved_max_seq_len", 8192))
     required_length = len(full_ids) + header.image_token_count + 1
+    if header.image_token_count + 1 > config.image_max_new_tokens:
+        raise ValueError(
+            "interleaved image token budget cannot fit the grid and EOI: "
+            f"required={header.image_token_count + 1}, "
+            f"budget={config.image_max_new_tokens}"
+        )
     if required_length > max_seq_len:
         raise ValueError(
             "interleaved frame would exceed thinker context: "

@@ -66,6 +66,7 @@ class InterleavedGenerationParams(BaseModel):
 
     max_frames: int = Field(default=10, ge=1)
     text_max_new_tokens: int = Field(default=8192, ge=1)
+    image_max_new_tokens: int = Field(default=1500, ge=1)
     dllm_steps: int = Field(default=32, ge=1)
     cfg_scale: float = Field(default=0.0, ge=0.0)
     cfg_text_scale: float = Field(default=7.5, ge=0.0)
