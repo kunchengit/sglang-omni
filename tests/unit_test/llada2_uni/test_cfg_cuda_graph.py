@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """CPU bridge tests using real Torch and the target SGLang registry source.
 
-Set SGLANG_SOURCE_ROOT to a 0.5.20 checkout. CUDA runners and FlashInfer kernels
-are explicit doubles; the registry and replay-view builder are unmodified source.
+Set SGLANG_SOURCE_ROOT to the target SGLang checkout. CUDA runners and
+FlashInfer kernels are explicit doubles; registry and replay-view construction
+come from the unmodified source tree.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ PACKAGE = "sglang_omni.models.llada2_uni."
 def bridge(monkeypatch):
     source = os.environ.get("SGLANG_SOURCE_ROOT")
     if source is None:
-        pytest.skip("set SGLANG_SOURCE_ROOT for real 0.5.20 registry-source tests")
+        pytest.skip("set SGLANG_SOURCE_ROOT for registry-source tests")
     source = Path(source) / "python/sglang/srt/model_executor"
 
     def stub(name, **values):
@@ -88,9 +89,6 @@ def bridge(monkeypatch):
         def can_run_graph(self, batch):
             return True
 
-        def _build_replay_fb_view(self, **kwargs):
-            return namespace["build_replay_fb_view"](**kwargs)
-
     stub(
         "sglang.srt.model_executor.runner.decode_cuda_graph_runner",
         DecodeCudaGraphRunner=Runner,
@@ -139,7 +137,7 @@ def bridge(monkeypatch):
     )
     stub("sglang.srt.mem_cache.memory_pool", KVWriteLoc=object)
     stub(
-        "sglang.srt.arg_groups.choices",
+        "sglang.srt.server_args",
         ATTENTION_BACKEND_CHOICES=[],
         add_attention_backend_choices=lambda names: None,
     )
@@ -156,6 +154,7 @@ def bridge(monkeypatch):
         ragged=Ragged,
         glue=glue,
         runner=Runner,
+        build_replay_fb_view=namespace["build_replay_fb_view"],
     )
 
 
@@ -280,8 +279,6 @@ def test_real_replay_view_transports_cfg_fields(bridge):
     batch = batch_for(bridge, (0, 6))
     registry = registry_for(bridge)
     fill(registry, batch)
-    runner = object.__new__(bridge.graph.LLaDA2CFGDecodeCudaGraphRunner)
-    runner.buffer_registry = registry
     buffers = NS(
         input_ids=torch.arange(16),
         positions=registry.get_slot("positions").buffer,
@@ -290,7 +287,7 @@ def test_real_replay_view_transports_cfg_fields(bridge):
         seq_lens_cpu=torch.tensor([12, 12, 4, 4]),
         mamba_track_indices=None,
     )
-    view = runner._build_replay_fb_view(
+    view = bridge.build_replay_fb_view(
         forward_batch=batch,
         buffers=buffers,
         bs=4,
@@ -300,7 +297,8 @@ def test_real_replay_view_transports_cfg_fields(bridge):
         capture_forward_mode=batch.forward_mode,
         is_encoder_decoder=False,
     )
-    assert type(view) is bridge.meta.DllmCFGForwardBatch
+    bridge.graph.attach_cfg_graph_views(view, registry)
+    assert type(view) is NS
     assert view.batch_size == 4 and view.num_padding == 2
     assert view.seq_lens_sum == 32
     assert view.dllm_left_pad_lens_cpu.tolist() == [0, 6, 0, 0]
@@ -413,10 +411,11 @@ def test_graph_configuration_never_silently_disables_features(bridge):
     assert args.attention_backend == "flashinfer"
 
 
-def test_missing_upstream_hook_fails_before_capture(bridge, monkeypatch):
-    monkeypatch.delattr(bridge.runner, "_build_replay_fb_view")
-    with pytest.raises(RuntimeError, match="extension hook"):
-        bridge.graph.LLaDA2CFGDecodeCudaGraphRunner(NS())
+def test_missing_graph_registry_fails_closed(bridge):
+    backend, _ = attention_for(bridge)
+    replay_view = NS(forward_mode=NS(is_dllm_extend=lambda: True))
+    with pytest.raises(RuntimeError, match="metadata registry is not bound"):
+        backend.init_forward_metadata_out_graph(replay_view)
 
 
 def test_capture_declares_static_metadata_before_model_capture(bridge, monkeypatch):
@@ -427,6 +426,7 @@ def test_capture_declares_static_metadata_before_model_capture(bridge, monkeypat
     runner.captured_req_width = runner.seq_len_fill_value = 4
     runner.enable_two_batch_overlap = runner.enable_pdmux = False
     runner.require_gathered_buffer = False
+    runner.attn_backend = NS()
     runner.capture_forward_mode = NS(is_dllm_extend=lambda: True)
     captured = []
     monkeypatch.setattr(

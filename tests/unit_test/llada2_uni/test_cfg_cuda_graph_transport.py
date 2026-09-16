@@ -29,6 +29,7 @@ from sglang.srt.model_executor.forward_batch_info import (
 from sglang.srt.model_executor.runner.eager_runner import EagerRunner
 
 from sglang_omni.models.llada2_uni.cfg_cuda_graph import (
+    attach_cfg_graph_views,
     register_cfg_graph_slots,
 )
 from sglang_omni.models.llada2_uni.cfg_cuda_graph_metadata import (
@@ -39,7 +40,8 @@ from tests.unit_test.llada2_uni.cfg_graph_test_utils import tiny_batch, tiny_run
 
 
 def test_real_runtime_backend_capability_registration(monkeypatch):
-    from sglang.srt.arg_groups import choices, overrides
+    from sglang.srt import server_args
+    from sglang.srt.arg_groups import overrides
     from sglang.srt.layers.attention.attention_registry import ATTENTION_BACKENDS
     from sglang.srt.model_executor.runner import decode_cuda_graph_runner
 
@@ -52,16 +54,11 @@ def test_real_runtime_backend_capability_registration(monkeypatch):
             .resolve()
             .is_relative_to(Path(expected_root).resolve())
         )
-    original = {
-        name: ATTENTION_BACKENDS[name]
-        for name in ("flashinfer", "llada2_cfg_flashinfer")
-    }
+    original = ATTENTION_BACKENDS.copy()
     register_llada2_uni_cfg()
     register_llada2_uni_cfg()
     assert (
-        choices.DLLM_CUDA_GRAPH_SUPPORTED_ATTENTION_BACKENDS.count(
-            "llada2_uni_cfg_flashinfer"
-        )
+        server_args.ATTENTION_BACKEND_CHOICES.count("llada2_uni_cfg_flashinfer")
         == 1
     )
     assert all(
@@ -75,7 +72,9 @@ def test_real_runtime_backend_capability_registration(monkeypatch):
         attention_backend="llada2_uni_cfg_flashinfer",
         cuda_graph_config=NS(decode=NS(backend="full")),
     )
-    assert overrides._dllm_attention_backend(args) == {}
+    assert overrides._dllm_attention_backend(args) == {
+        "attention_backend": "flashinfer"
+    }
 
 
 @pytest.mark.parametrize("pads", [(0,), (0, 6), (2, 6, 3)])
@@ -141,16 +140,23 @@ def test_real_cfg_metadata_transport(monkeypatch, pads, path):
         )
 
 
-def test_real_decode_load_uses_hook_and_resets_padded_metadata():
+def test_real_decode_load_attaches_and_resets_padded_metadata():
     received = []
-    runner = tiny_runner(NS(init_forward_metadata_out_graph=received.append))
+    backend = NS()
+
+    def receive(view):
+        attach_cfg_graph_views(view, backend._cfg_graph_registry)
+        received.append(view)
+
+    backend.init_forward_metadata_out_graph = receive
+    runner = tiny_runner(backend)
     pointer = runner.buffer_registry.get_slot("dllm_left_pad_lens").buffer.data_ptr()
     for prefix, pads in [((8, 8, 8), (2, 6, 3)), ((12, 12), (0, 5)), ((4,), (0,))]:
         batch = tiny_batch(prefix, pads)
         assert runner.can_run_graph(batch)
         runner.load_batch(batch)
         view = received[-1]
-        assert type(view) is DllmCFGForwardBatch
+        assert type(view) is NS
         assert view.batch_size == 4 and view.num_padding == 4 - len(pads)
         assert view.dllm_left_pad_lens_cpu.tolist() == list(pads) + [0] * (
             4 - len(pads)

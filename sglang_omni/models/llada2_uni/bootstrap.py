@@ -13,7 +13,6 @@ def register_llada2_uni_cfg() -> None:
 
     The text-only LowConfidence variant does not need this registration.
     """
-    from sglang.srt.arg_groups.choices import add_dllm_cuda_graph_attention_backend
     from sglang.srt.dllm.algorithm import algo_name_to_cls
 
     from sglang_omni.models.llada2_uni.algorithm.low_confidence_cfg import (
@@ -26,7 +25,6 @@ def register_llada2_uni_cfg() -> None:
 
     algo_name_to_cls["LowConfidenceCFG"] = LowConfidenceCFG
     register_llada2_cfg_flashinfer_backend()
-    add_dllm_cuda_graph_attention_backend(CFG_ATTENTION_BACKEND)
 
 
 def _validate_cfg(server_args: Any) -> None:
@@ -47,6 +45,19 @@ def _validate_cfg(server_args: Any) -> None:
     from sglang_omni.models.llada2_uni.cfg_attention_backend import (
         CFG_ATTENTION_BACKEND,
     )
+
+    # SGLang 0.5.19 resolves graph-enabled DLLM backends to stock FlashInfer.
+    # Restore the explicitly requested model backend before runtime publication.
+    if (
+        cfg.attention_backend == "flashinfer"
+        and getattr(server_args, "attention_backend", None) == CFG_ATTENTION_BACKEND
+    ):
+        override_server_args(
+            server_args,
+            "sglang_omni.llada2_uni.cfg_attention_backend",
+            attention_backend=CFG_ATTENTION_BACKEND,
+        )
+        cfg = resolved_view(server_args)
 
     if any(backend != CFG_ATTENTION_BACKEND for backend in attention_backends_of(cfg)):
         raise ValueError(

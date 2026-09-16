@@ -155,10 +155,9 @@ def modules(monkeypatch):
     choices = ["flashinfer", "llada2_cfg_flashinfer"]
     registry = {name: object() for name in choices}
     stub(
-        "sglang.srt.arg_groups.choices",
+        "sglang.srt.server_args",
         ATTENTION_BACKEND_CHOICES=choices,
         add_attention_backend_choices=choices.extend,
-        add_dllm_cuda_graph_attention_backend=lambda name: None,
     )
     stub("sglang.srt.layers.attention.attention_registry", ATTENTION_BACKENDS=registry)
     stub("sglang.srt.mem_cache.memory_pool", KVWriteLoc=lambda *args: ("write", *args))

@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Model-specific DLLM CFG bridge for the 0.5.20 decode graph runner.
+"""Model-specific DLLM CFG bridge for the SGLang decode graph runner.
 
-Integration uses ModelRunner._decode_cuda_graph_runner_cls and the upstream
-_build_replay_fb_view extension hook. No runner or backend is monkeypatched.
-Only fixed-width blocks without query-local padding are graph eligible.
+Integration uses ModelRunner._decode_cuda_graph_runner_cls and backend-owned
+registry views. No runner or backend is monkeypatched. Only fixed-width blocks
+without query-local padding are graph eligible.
 """
 
 from __future__ import annotations
 
-from dataclasses import fields, replace
+from dataclasses import fields
 
 import torch
 from sglang.srt.model_executor.cuda_graph_buffer_registry import (
@@ -70,15 +70,17 @@ def cfg_graph_views(registry, bs: int) -> dict:
     return {name: registry.get_slot(name).buffer[:bs] for name in CFG_GRAPH_FIELDS}
 
 
+def attach_cfg_graph_views(forward_batch, registry):
+    """Attach model-owned registry fields to SGLang's replay metadata view."""
+    for name, value in cfg_graph_views(registry, forward_batch.batch_size).items():
+        setattr(forward_batch, name, value)
+    return forward_batch
+
+
 class LLaDA2CFGDecodeCudaGraphRunner(DecodeCudaGraphRunner):
     """Scoped capture/replay transport with ordinary runner eligibility gates."""
 
     def __init__(self, model_runner, **kwargs):
-        if not hasattr(DecodeCudaGraphRunner, "_build_replay_fb_view"):
-            raise RuntimeError(
-                "DLLM CFG CUDA graphs require the SGLang decode runner "
-                "_build_replay_fb_view extension hook"
-            )
         validate_cfg_cuda_graph_config(model_runner.server_args)
         super().__init__(model_runner, **kwargs)
 
@@ -96,6 +98,7 @@ class LLaDA2CFGDecodeCudaGraphRunner(DecodeCudaGraphRunner):
             raise ValueError("DLLM CFG CUDA graphs require DLLM_EXTEND capture")
         if not self.buffer_registry.has_slot("dllm_left_pad_lens"):
             register_cfg_graph_slots(self.buffer_registry, self.captured_req_width)
+        self.attn_backend._cfg_graph_registry = self.buffer_registry
         return super().capture()
 
     def capture_prepare(self, size, stream_idx=None, num_tokens=None):
@@ -129,15 +132,5 @@ class LLaDA2CFGDecodeCudaGraphRunner(DecodeCudaGraphRunner):
 
     def load_batch(self, forward_batch, pp_proxy_tensors=None):
         # Promotion is local to this call. The algorithm retains its original reqs.
+        self.attn_backend._cfg_graph_registry = self.buffer_registry
         return super().load_batch(as_cfg_forward_batch(forward_batch), pp_proxy_tensors)
-
-    def _build_replay_fb_view(self, **kwargs):
-        base = super()._build_replay_fb_view(**kwargs)
-        batch = kwargs["forward_batch"]
-        values = {
-            f.name: getattr(base, f.name)
-            for f in fields(batch)
-            if hasattr(base, f.name)
-        }
-        values.update(cfg_graph_views(self.buffer_registry, kwargs["bs"]))
-        return replace(batch, **values)

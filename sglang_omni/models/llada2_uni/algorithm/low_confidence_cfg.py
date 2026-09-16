@@ -454,7 +454,7 @@ class LowConfidenceCFG(DllmAlgorithm):
         forward_batch: ForwardBatch,
         algo_states=None,
     ) -> DllmRunOutput:
-        """SGLang 0.5.20 contract; PR3 deliberately uses synchronous eager CFG."""
+        """Run synchronous CFG generation through SGLang's DLLM contract."""
         if algo_states is not None:
             raise ValueError("LowConfidenceCFG does not accept carried FDFO state")
         logits, token_ids, can_run_graph = self._run_pr3(model_runner, forward_batch)

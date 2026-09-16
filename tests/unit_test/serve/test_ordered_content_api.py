@@ -96,7 +96,10 @@ def test_interleaved_params_preserve_sampling_and_zero_overrides():
     )
     generate = _build_chat_generate_request(req)
     omni = Client._build_omni_request(generate)
-    assert omni.metadata["interleaved_generation"] == params
+    assert omni.metadata["interleaved_generation"] == {
+        **params,
+        "image_max_new_tokens": 1500,
+    }
     assert omni.params["temperature"] == 0.0 and omni.params["seed"] == 0
     assert omni.params["max_new_tokens"] == 64
     assert omni.params["stage_sampling"]["thinker"]["max_new_tokens"] == 32

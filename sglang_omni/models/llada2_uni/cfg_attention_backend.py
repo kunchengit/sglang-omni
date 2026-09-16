@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import torch
 from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper
-from sglang.srt.arg_groups.choices import (
+from sglang.srt.server_args import (
     ATTENTION_BACKEND_CHOICES,
     add_attention_backend_choices,
 )
@@ -73,6 +73,15 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
         self._cfg_local_left_pad_active = False
         if not forward_batch.forward_mode.is_dllm_extend():
             return super().init_forward_metadata_out_graph(forward_batch, in_capture)
+        if not hasattr(forward_batch, "dllm_left_pad_lens"):
+            from sglang_omni.models.llada2_uni.cfg_cuda_graph import (
+                attach_cfg_graph_views,
+            )
+
+            registry = getattr(self, "_cfg_graph_registry", None)
+            if registry is None:
+                raise RuntimeError("DLLM CFG replay metadata registry is not bound")
+            attach_cfg_graph_views(forward_batch, registry)
         geometry = cfg_attention_geometry(forward_batch)
         if any(geometry.local_pad):
             raise ValueError(
