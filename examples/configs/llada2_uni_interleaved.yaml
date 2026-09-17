@@ -1,0 +1,12 @@
+config_cls: LLaDA2UniInterleavedPipelineConfig
+model_path: inclusionAI/LLaDA2.0-Uni
+stages:
+  thinker:
+    engine:
+      disable_cuda_graph: false
+      cuda_graph_bs: [1, 2, 3, 4]
+  image_decode:
+    factory:
+      backend: diffusers
+      decode_mode: decoder-turbo
+      num_steps: 8

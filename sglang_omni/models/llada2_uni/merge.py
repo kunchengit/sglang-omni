@@ -18,7 +18,7 @@ def extract_image_vq_tokens(
     state: LLaDA2UniPipelineState,
 ) -> tuple[list[int], int, int, dict[str, Any]] | None:
     """Return decoder codebook IDs, semantic grid size, and generation options."""
-    if state.task_kind not in ("t2i", "edit"):
+    if state.task_kind not in ("t2i", "edit", "interleaved"):
         return None
     thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
     if not isinstance(thinker_out, dict):
@@ -47,7 +47,12 @@ def extract_image_vq_tokens(
         h = w = math.isqrt(len(tokens))
         if h * w != len(tokens):
             raise ValueError(f"Cannot infer an image grid from {len(tokens)} VQ tokens")
-    params = state.request_metadata.get("image_generation", {})
+    metadata_key = (
+        "interleaved_generation"
+        if state.task_kind == "interleaved"
+        else "image_generation"
+    )
+    params = state.request_metadata.get(metadata_key, {})
     return tokens, h, w, params if isinstance(params, dict) else {}
 
 
@@ -72,3 +77,33 @@ def decode_events(
             is_final=True,
         )
     ]
+
+
+def build_interleaved_content(
+    state: LLaDA2UniPipelineState,
+) -> list[dict[str, Any]]:
+    """Join serialized text segments and decoded frames in generation order."""
+    stream_state = state.stream_state
+    segments = stream_state.get("interleaved_segments", [])
+    frames = stream_state.get("interleaved_decoded_frames", [])
+    if len(frames) != len(segments):
+        raise ValueError(
+            "Interleaved output is incomplete: "
+            f"{len(segments)} generated frames, {len(frames)} decoded frames"
+        )
+
+    content: list[dict[str, Any]] = []
+    for expected_index, (segment, frame) in enumerate(
+        zip(segments, frames, strict=True), start=1
+    ):
+        if int(frame.get("frame_index", 0)) != expected_index:
+            raise ValueError("Interleaved decoded frames are out of order")
+        text = str(segment.get("text", ""))
+        if text:
+            content.append({"type": "text", "text": text})
+        content.append({"type": "image", "image": dict(frame)})
+
+    trailing_text = str(stream_state.get("interleaved_trailing_text", ""))
+    if trailing_text:
+        content.append({"type": "text", "text": trailing_text})
+    return content

@@ -84,6 +84,25 @@ class ImageGenerationParams(BaseModel):
     source_image_tokens: SourceImageTokens | None = None
 
 
+class InterleavedGenerationParams(BaseModel):
+    """Per-request controls for ordered text/image generation."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    max_frames: int = Field(default=10, ge=1)
+    text_max_new_tokens: int = Field(default=8192, ge=1)
+    image_max_new_tokens: int = Field(default=1500, ge=1)
+    dllm_steps: int = Field(default=32, ge=1)
+    cfg_scale: float = Field(default=0.0, ge=0.0)
+    cfg_text_scale: float = Field(default=7.5, ge=0.0)
+    cfg_image_scale: float = Field(default=1.5, ge=0.0)
+    cfg_rescale: float = Field(default=0.7, ge=0.0, le=1.0)
+    decode_mode: Literal["normal", "decoder-turbo"] = "decoder-turbo"
+    decoder_steps: int = Field(default=8, ge=1)
+    seed: int | None = None
+    max_image_tokens: int = Field(default=4096, ge=1)
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request."""
 
@@ -122,6 +141,7 @@ class ChatCompletionRequest(BaseModel):
 
     # Image generation config (sglang-omni extension)
     image_generation: ImageGenerationParams | None = None
+    interleaved_generation: InterleavedGenerationParams | None = None
 
     # Video input (sglang-omni extension)
     # Can be a list of video file paths (local paths or URLs)

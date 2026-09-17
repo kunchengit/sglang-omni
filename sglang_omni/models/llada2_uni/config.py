@@ -121,9 +121,58 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
     ]
 
 
+class LLaDA2UniInterleavedPipelineConfig(LLaDA2UniPipelineConfig):
+    """Serialized text/image generation with frame-local image decoding."""
+
+    stages: list[StageConfig] = [
+        StageConfig(
+            name=PREPROCESSING_STAGE,
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_preprocessing_executor",
+            factory=FactoryArgs(max_seq_len=8192),
+            next=IMAGE_STAGE,
+        ),
+        StageConfig(
+            name=IMAGE_STAGE,
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_image_encoder_executor",
+            gpu=0,
+            next=THINKER_STAGE,
+        ),
+        EngineStageConfig(
+            name=THINKER_STAGE,
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
+            factory=FactoryArgs(max_seq_len=8192, dllm_algorithm="LowConfidenceCFG"),
+            engine=EngineArgs(mem_fraction_static=0.75),
+            gpu=0,
+            next=[THINKER_STAGE, IMAGE_DECODE_STAGE, DECODE_STAGE],
+            route_fn=f"{_PKG}.routing.thinker_next",
+        ),
+        StageConfig(
+            name=IMAGE_DECODE_STAGE,
+            process=IMAGE_DECODE_STAGE,
+            factory_path=f"{_PKG}.stages.create_image_decode_executor",
+            factory=LLaDA2ImageDecoderFactoryArgs(
+                decode_mode="decoder-turbo", num_steps=8
+            ),
+            gpu=0,
+            next=[THINKER_STAGE, DECODE_STAGE],
+            route_fn=f"{_PKG}.routing.interleaved_decoder_next",
+        ),
+        StageConfig(
+            name=DECODE_STAGE,
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_decode_executor",
+            terminal=True,
+        ),
+    ]
+
+
 EntryClass = LLaDA2UniOmniPipelineConfig
 
 Variants = {
     "text": LLaDA2UniPipelineConfig,
     "omni": LLaDA2UniOmniPipelineConfig,
+    "interleaved": LLaDA2UniInterleavedPipelineConfig,
 }

@@ -141,7 +141,10 @@ def create_sglang_dllm_thinker_executor_from_config(
 
 def create_decode_executor(model_path: str):
     from sglang_omni.models.llada2_uni.components.common import load_llada2_tokenizer
-    from sglang_omni.models.llada2_uni.merge import decode_events
+    from sglang_omni.models.llada2_uni.merge import (
+        build_interleaved_content,
+        decode_events,
+    )
     from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
@@ -149,6 +152,16 @@ def create_decode_executor(model_path: str):
 
     def _decode(payload):
         state = LLaDA2UniPipelineState.from_dict(payload.data)
+        if state.task_kind == "interleaved":
+            stream_state = state.stream_state
+            payload.data = {
+                "modality": "interleaved",
+                "content": build_interleaved_content(state),
+                "finish_reason": stream_state.get("interleaved_finish_reason", "stop"),
+                "usage": stream_state.get("interleaved_usage", {}),
+            }
+            return payload
+
         thinker_out = state.thinker_out or state.engine_outputs.get(THINKER_STAGE)
         if not isinstance(thinker_out, dict):
             logger.warning(
@@ -299,6 +312,21 @@ def create_image_decode_executor(
             payload={"image": image_b64, "format": "png"},
             is_final=True,
         )
+        if state.task_kind == "interleaved":
+            frame = state.stream_state.get("interleaved_segments", [])[-1]
+            state.stream_state.setdefault("interleaved_decoded_frames", []).append(
+                {
+                    "data": image_b64,
+                    "format": "png",
+                    "frame_index": int(frame["frame_index"]),
+                    "grid_h": int(frame["grid_h"]),
+                    "grid_w": int(frame["grid_w"]),
+                }
+            )
+            state.stream_state.pop("interleaved_emit_frame", None)
+            payload.data = state.to_dict()
+            return payload
+
         payload.data = {
             "events": [_event_to_dict(event)],
             "modality": "image",

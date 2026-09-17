@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Image API validation, metadata forwarding, and PR3 response format."""
+"""Image API validation, metadata forwarding, and ordered image content."""
 
 from __future__ import annotations
 
@@ -138,7 +138,7 @@ def test_image_config_and_modalities_reach_omni_request(modalities, image_config
     )
     generate = _build_chat_generate_request(req)
     omni = Client._build_omni_request(generate)
-    expected_modalities = ["text"] if modalities is None else modalities
+    expected_modalities = ["text", "image"] if modalities is None else modalities
     assert generate.output_modalities == expected_modalities
     assert omni.metadata["output_modalities"] == expected_modalities
     assert omni.metadata["image_generation"] == image_config
@@ -178,7 +178,7 @@ def test_all_image_controls_preserve_explicit_values():
 
 
 @pytest.mark.parametrize("modalities", [None, ["text"], ["image"], ["text", "image"]])
-def test_chat_image_response_keeps_pr3_format_and_modality_choices(api, modalities):
+def test_chat_image_response_uses_ordered_content_and_modality_choices(api, modalities):
     client, coordinator = api
     response = client.post(
         "/v1/chat/completions",
@@ -191,14 +191,14 @@ def test_chat_image_response_keeps_pr3_format_and_modality_choices(api, modaliti
     assert response.status_code == 200
     data = response.json()
     message = data["choices"][0]["message"]
-    if modalities and "image" in modalities:
-        assert message["image"] == {"data": "cG5n", "format": "png"}
-    else:
-        assert "image" not in message
-    if modalities == ["image"]:
-        assert "content" not in message
-    else:
-        assert message["content"] == "A red square"
+    expected = []
+    requested = modalities if modalities is not None else ["text", "image"]
+    if "text" in requested:
+        expected.append({"type": "text", "text": "A red square"})
+    if "image" in requested:
+        expected.append({"type": "image", "image": {"data": "cG5n", "format": "png"}})
+    assert message["content"] == expected
+    assert not {"image", "images", "interleaved_content"}.intersection(message)
     assert "audio" not in message
     assert data["choices"][0]["finish_reason"] == "length"
     assert data["usage"] == {

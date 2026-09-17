@@ -19,6 +19,10 @@ from sglang_omni.models.llada2_uni.config import (
     DEFAULT_THINKER_MAX_NEW_TOKENS,
     IMAGE_STAGE,
 )
+from sglang_omni.models.llada2_uni.interleaved import (
+    SYSTEM_PROMPT_INTERLEAVED,
+    InterleavedGenerationConfig,
+)
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.image import (
@@ -323,8 +327,17 @@ class LLaDA2Preprocessor:
 
         metadata = request.metadata if isinstance(request.metadata, dict) else {}
         image_generation = metadata.get("image_generation")
+        interleaved_generation = metadata.get("interleaved_generation")
         task_kind = "chat"
-        if isinstance(image_generation, dict):
+        if isinstance(interleaved_generation, dict):
+            if isinstance(image_generation, dict):
+                raise ValueError(
+                    "image_generation and interleaved_generation are mutually exclusive"
+                )
+            if raw_images:
+                raise ValueError("interleaved generation requires text-only input")
+            task_kind = "interleaved"
+        elif isinstance(image_generation, dict):
             has_source = bool(raw_images) or (
                 image_generation.get("source_image_tokens") is not None
             )
@@ -435,13 +448,22 @@ class LLaDA2Preprocessor:
                     self._set_cfg_branch(stream_state, input_ids, uncond)
             else:
                 raise ValueError(f"Unsupported image generation mode: {mode!r}")
+        elif task_kind == "interleaved":
+            config = InterleavedGenerationConfig.from_metadata(metadata)
+            stream_state.update(
+                config.to_stream_state(
+                    prompt_length=len(input_ids),
+                    max_seq_len=self._max_seq_len or 8192,
+                )
+            )
 
         input_ids_tensor = torch.tensor([input_ids], dtype=torch.long)
+        validation_max_new_tokens = 1 if task_kind == "interleaved" else max_new_tokens
 
         validate_prompt_seq_len(
             input_ids_tensor,
             max_seq_len=self._max_seq_len,
-            max_new_tokens=max_new_tokens,
+            max_new_tokens=validation_max_new_tokens,
             request_id=payload.request_id,
         )
 
@@ -515,6 +537,7 @@ class LLaDA2Preprocessor:
             "t2i": SYSTEM_PROMPT_T2I,
             "t2i_thinking": SYSTEM_PROMPT_T2I_THINKING,
             "edit": EDIT_SYSTEM_PROMPT,
+            "interleaved": SYSTEM_PROMPT_INTERLEAVED,
         }.get(task_kind, DEFAULT_SYSTEM_PROMPT)
         parts.append(f"{ROLE_SYSTEM} {system_prompt} ")
 

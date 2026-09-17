@@ -673,15 +673,57 @@ def _common_model_info_value(
     return None
 
 
+def _has_non_text_input(req: ChatCompletionRequest) -> bool:
+    if req.images or req.audios or req.videos:
+        return True
+    for message in req.messages:
+        content = message.content
+        if isinstance(content, str):
+            continue
+        if not isinstance(content, list):
+            return True
+        for part in content:
+            if isinstance(part, str):
+                continue
+            if (
+                not isinstance(part, dict)
+                or part.get("type") != "text"
+                or not isinstance(part.get("text"), str)
+            ):
+                return True
+    return False
+
+
 def _validate_image_generation_request(req: ChatCompletionRequest) -> None:
     """Reject unsupported image requests before dispatch or SSE headers."""
     if req.stream and (
-        req.image_generation is not None or "image" in (req.modalities or [])
+        req.image_generation is not None
+        or req.interleaved_generation is not None
+        or "image" in (req.modalities or [])
     ):
         raise HTTPException(
             status_code=400,
             detail="Image generation does not support streaming; set stream=false",
         )
+    if req.image_generation is not None and req.interleaved_generation is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="image_generation and interleaved_generation are mutually exclusive",
+        )
+    if req.interleaved_generation is not None:
+        if _has_non_text_input(req):
+            raise HTTPException(
+                status_code=400,
+                detail="interleaved_generation requires text-only input",
+            )
+        if req.modalities is not None and (
+            len(req.modalities) != 2 or set(req.modalities) != {"text", "image"}
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Interleaved generation requires text and image output modalities",
+            )
+        return
     if req.image_generation is None:
         return
 
@@ -715,6 +757,28 @@ def _validate_image_generation_request(req: ChatCompletionRequest) -> None:
             status_code=400,
             detail="Image editing requires a non-empty instruction",
         )
+
+
+def _requested_output_modalities(req: ChatCompletionRequest) -> list[str]:
+    if req.modalities is not None:
+        return req.modalities
+    if req.image_generation is not None or req.interleaved_generation is not None:
+        return ["text", "image"]
+    return ["text"]
+
+
+def _filter_content_parts(
+    content: list[dict[str, Any]], requested_modalities: list[str]
+) -> list[dict[str, Any]]:
+    return [
+        part
+        for part in content
+        if (part.get("type") != "text" or "text" in requested_modalities)
+        and (
+            part.get("type") not in {"image", "image_url"}
+            or "image" in requested_modalities
+        )
+    ]
 
 
 def _register_chat_completions(app: FastAPI) -> None:
@@ -791,12 +855,14 @@ async def _chat_non_stream(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    requested_modalities = req.modalities if req.modalities is not None else ["text"]
+    requested_modalities = _requested_output_modalities(req)
 
     # Build message content
     message: dict[str, Any] = {"role": "assistant"}
 
-    if "text" in requested_modalities and result.text:
+    if result.content is not None:
+        message["content"] = _filter_content_parts(result.content, requested_modalities)
+    elif "text" in requested_modalities and result.text:
         message["content"] = result.text
 
     if "audio" in requested_modalities and result.audio is not None:
@@ -806,11 +872,8 @@ async def _chat_non_stream(
             "transcript": result.audio.transcript,
         }
 
-    if "image" in requested_modalities and result.image is not None:
-        message["image"] = {"data": result.image, "format": "png"}
-
-    if not {"content", "audio", "image"}.intersection(message):
-        message["content"] = result.text
+    if not {"content", "audio"}.intersection(message):
+        message["content"] = result.text if "text" in requested_modalities else None
 
     # Build usage
     usage = None
@@ -850,7 +913,7 @@ async def _chat_stream(
 ) -> AsyncIterator[str]:
     """Streaming chat completion generator (yields SSE events)."""
     role_sent = False
-    requested_modalities = req.modalities or ["text"]
+    requested_modalities = _requested_output_modalities(req)
     finish_reason: str | None = None
     final_usage: UsageResponse | None = None
 
@@ -999,7 +1062,7 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     messages = [Message(role=m.role, content=m.content) for m in req.messages]
 
     # Determine output modalities
-    output_modalities = req.modalities if req.modalities is not None else ["text"]
+    output_modalities = _requested_output_modalities(req)
 
     # Build per-stage sampling overrides
     stage_sampling: dict[str, SamplingParams] | None = None
@@ -1046,6 +1109,10 @@ def _build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         metadata["image_generation"] = req.image_generation.model_dump(
             exclude_none=True,
             exclude_unset=True,
+        )
+    if req.interleaved_generation is not None:
+        metadata["interleaved_generation"] = req.interleaved_generation.model_dump(
+            exclude_none=True
         )
     _record_explicit_generation_params(
         metadata,

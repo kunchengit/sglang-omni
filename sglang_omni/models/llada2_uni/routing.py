@@ -15,6 +15,25 @@ from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 
 def thinker_next(request_id: str, output: Any) -> str | list[str]:
     state = LLaDA2UniPipelineState.from_dict(getattr(output, "data", None))
+    if state.task_kind == "interleaved":
+        stream_state = state.stream_state
+        if stream_state.get("interleaved_emit_frame"):
+            return IMAGE_DECODE_STAGE
+        if stream_state.get("interleaved_done"):
+            return DECODE_STAGE
+        if stream_state.get("interleaved_needs_reentry"):
+            return THINKER_STAGE
+        raise RuntimeError(f"interleaved request {request_id} has no next stage")
     if state.stream_state.get("thinking_needs_reentry"):
         return THINKER_STAGE
     return [DECODE_STAGE, IMAGE_DECODE_STAGE]
+
+
+def interleaved_decoder_next(request_id: str, output: Any) -> str:
+    state = LLaDA2UniPipelineState.from_dict(getattr(output, "data", None))
+    stream_state = state.stream_state
+    if stream_state.get("interleaved_done"):
+        return DECODE_STAGE
+    if stream_state.get("interleaved_needs_reentry"):
+        return THINKER_STAGE
+    raise RuntimeError(f"interleaved decoder request {request_id} has no continuation")
