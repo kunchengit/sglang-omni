@@ -216,9 +216,12 @@ def create_image_decode_executor(
     decode_mode: str = "normal",
     num_steps: int = 50,
     resolution_multiplier: int = 2,
+    backend: str = "diffusers",
+    attention_backend: str = "torch_sdpa",
 ):
     import base64
     import io
+    from contextlib import nullcontext
 
     from sglang_omni.models.llada2_uni.components.image_decoder import (
         LLaDA2ImageDecoder,
@@ -232,14 +235,36 @@ def create_image_decode_executor(
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_concrete_device
 
-    decoder = LLaDA2ImageDecoder(
-        model_path=model_path,
-        device=str(resolve_concrete_device(device, gpu_id)),
-        dtype=resolve_dtype(dtype),
-        decode_mode=decode_mode,
-        num_steps=num_steps,
-        resolution_multiplier=resolution_multiplier,
-    )
+    concrete_device = resolve_concrete_device(device, gpu_id)
+    dtype = resolve_dtype(dtype)
+    runtime = None
+    if backend == "sglang":
+        from sglang_omni.models.llada2_uni.components.decoder_runtime import (
+            initialize_decoder_runtime,
+        )
+
+        runtime = initialize_decoder_runtime(
+            model_path,
+            gpu_id=concrete_device.index if concrete_device.type == "cuda" else None,
+            dtype=dtype,
+            attention_backend=attention_backend,
+        )
+    try:
+        with runtime.compute_context() if runtime else nullcontext():
+            decoder = LLaDA2ImageDecoder(
+                model_path=model_path,
+                device=str(concrete_device),
+                dtype=dtype,
+                decode_mode=decode_mode,
+                num_steps=num_steps,
+                resolution_multiplier=resolution_multiplier,
+                backend=backend,
+                runtime=runtime,
+            )
+    except BaseException:
+        if runtime:
+            runtime.close()
+        raise
 
     def _decode_image(payload):
         state = LLaDA2UniPipelineState.from_dict(payload.data)
@@ -263,7 +288,8 @@ def create_image_decode_executor(
             and "num_steps" not in call_kwargs
         ):
             call_kwargs["num_steps"] = 8
-        image = decoder.decode(vq_tokens, h, w, **call_kwargs)
+        with runtime.compute_context() if runtime else nullcontext():
+            image = decoder.decode(vq_tokens, h, w, **call_kwargs)
         buf = io.BytesIO()
         image.save(buf, format="PNG")
         image_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
@@ -280,4 +306,15 @@ def create_image_decode_executor(
         }
         return payload
 
-    return SimpleScheduler(_decode_image)
+    if runtime is None:
+        return SimpleScheduler(_decode_image)
+
+    class ImageDecoderScheduler(SimpleScheduler):
+        def start(self):
+            try:
+                return super().start()
+            finally:
+                # Shutdown callbacks run before the compute thread has exited.
+                runtime.close()
+
+    return ImageDecoderScheduler(_decode_image)

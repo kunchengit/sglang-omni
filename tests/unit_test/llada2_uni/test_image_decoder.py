@@ -8,7 +8,6 @@ numeric comparisons against its backbone and transport implementation.
 from __future__ import annotations
 
 import importlib.util
-import inspect
 import io
 import json
 import os
@@ -145,11 +144,11 @@ def test_config_metadata_is_not_forwarded(tiny_config):
         _decoder_config(dict(tiny_config, unsupported_architecture=True))
 
 
-@pytest.mark.parametrize("backend", ["sglang", "auto", "missing", None])
-def test_only_explicit_diffusers_backend(tmp_path, backend):
-    with pytest.raises(ValueError, match="only backend='diffusers'"):
+@pytest.mark.parametrize("backend", ["auto", "missing", None])
+def test_only_explicit_supported_backend(tmp_path, backend):
+    with pytest.raises(ValueError, match="Unsupported image decoder backend"):
         LLaDA2ImageDecoder(str(tmp_path), device="cpu", backend=backend)
-    with pytest.raises(ValueError, match="only backend='diffusers'"):
+    with pytest.raises(ValueError, match="Unsupported image decoder backend"):
         ZImageTransformer2DModelWrapper(
             tmp_path, {}, "cpu", torch.float32, backend=backend
         )
@@ -167,15 +166,6 @@ def test_constructor_contract_and_hf_resolution(monkeypatch, tmp_path):
     assert decoder.model_path == str(tmp_path)
     assert decoder.backend == "diffusers"
     assert decoder._diff_model is decoder._sigvq is decoder._vae is None
-    assert list(inspect.signature(LLaDA2ImageDecoder).parameters) == [
-        "model_path",
-        "device",
-        "dtype",
-        "decode_mode",
-        "num_steps",
-        "resolution_multiplier",
-        "backend",
-    ]
 
 
 def test_sigvq_math_and_checkpoint_names():
