@@ -172,6 +172,9 @@ def create_decode_executor(model_path: str):
             result.update(events[0].payload)
             result.setdefault("modality", events[0].modality)
 
+        if state.task_kind in ("t2i", "edit"):
+            result["text"] = state.stream_state.get("thinking_text") or ""
+
         finish_reason = thinker_out.get("finish_reason")
         if finish_reason is not None:
             result.setdefault("finish_reason", finish_reason)
@@ -202,3 +205,79 @@ def create_decode_executor(model_path: str):
         return payload
 
     return SimpleScheduler(_decode)
+
+
+def create_image_decode_executor(
+    model_path: str,
+    *,
+    device: str | None = None,
+    gpu_id: int | None = None,
+    dtype: Any = None,
+    decode_mode: str = "normal",
+    num_steps: int = 50,
+    resolution_multiplier: int = 2,
+):
+    import base64
+    import io
+
+    from sglang_omni.models.llada2_uni.components.image_decoder import (
+        LLaDA2ImageDecoder,
+    )
+    from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
+    from sglang_omni.models.llada2_uni.payload_types import (
+        LLaDA2UniEvent,
+        LLaDA2UniPipelineState,
+    )
+    from sglang_omni.models.weight_loader import resolve_dtype
+    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+    from sglang_omni.utils.device import resolve_concrete_device
+
+    decoder = LLaDA2ImageDecoder(
+        model_path=model_path,
+        device=str(resolve_concrete_device(device, gpu_id)),
+        dtype=resolve_dtype(dtype),
+        decode_mode=decode_mode,
+        num_steps=num_steps,
+        resolution_multiplier=resolution_multiplier,
+    )
+
+    def _decode_image(payload):
+        state = LLaDA2UniPipelineState.from_dict(payload.data)
+        result = extract_image_vq_tokens(state)
+        if result is None:
+            payload.data = {"events": [], "modality": "image", "skipped": True}
+            return payload
+
+        vq_tokens, h, w, params = result
+        call_kwargs = {
+            target: params[source]
+            for source, target in (
+                ("decode_mode", "decode_mode"),
+                ("decoder_steps", "num_steps"),
+                ("seed", "seed"),
+            )
+            if params.get(source) is not None
+        }
+        if (
+            call_kwargs.get("decode_mode") == "decoder-turbo"
+            and "num_steps" not in call_kwargs
+        ):
+            call_kwargs["num_steps"] = 8
+        image = decoder.decode(vq_tokens, h, w, **call_kwargs)
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        image_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        event = LLaDA2UniEvent(
+            type="image_final",
+            modality="image",
+            payload={"image": image_b64, "format": "png"},
+            is_final=True,
+        )
+        payload.data = {
+            "events": [_event_to_dict(event)],
+            "modality": "image",
+            **event.payload,
+        }
+        return payload
+
+    return SimpleScheduler(_decode_image)
