@@ -43,6 +43,10 @@ def _scheduler(*, fdfo: bool, block_size: int = 4) -> DllmScheduler:
         block_size=block_size,
     )
     scheduler._rid_to_req_data = {}
+    scheduler._cond_to_unconds = {}
+    scheduler._uncond_to_cond = {}
+    scheduler._uncond_rids = set()
+    scheduler._orphaned_uncond_rids = set()
     scheduler._result_adapter = lambda value: value
     scheduler.outbox = SimpleNamespace(put=lambda value: None)
     return scheduler
@@ -117,13 +121,15 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduler = object.__new__(DllmScheduler)
-    batch = SimpleNamespace(output_ids=None)
+    batch = SimpleNamespace(output_ids=None, reqs=[])
+    forward_batch = SimpleNamespace()
     forwarded = []
 
     scheduler._running = True
     scheduler._drain_and_purge = lambda: None
     scheduler._schedule_next_batch = lambda: batch
     scheduler._apply_results = lambda *_: None
+    scheduler._apply_cfg_padding_metadata = lambda *_: None
 
     def stop_after_step(_batch) -> None:
         scheduler._running = False
@@ -143,13 +149,14 @@ def test_dllm_scheduler_event_loop_passes_schedule_batch_to_worker(
     )
     monkeypatch.setattr(
         dllm_scheduler_module,
-        "ForwardBatch",
-        SimpleNamespace(init_new=lambda *args, **kwargs: "forward-batch"),
+        "DllmForwardBatch",
+        SimpleNamespace(init_new=lambda *args, **kwargs: forward_batch),
     )
 
     scheduler._event_loop()
 
-    assert forwarded == [("forward-batch", batch)]
+    assert forwarded == [(forward_batch, batch)]
+    assert forward_batch.reqs == []
 
 
 def test_dllm_staging_admission_uses_dllm_config(
@@ -166,6 +173,7 @@ def test_dllm_staging_admission_uses_dllm_config(
     scheduler._waiting_queue = []
     req = SimpleNamespace(
         rid="req",
+        kv=SimpleNamespace(),
         inflight_middle_chunks=0,
         init_next_round_input=lambda: None,
     )

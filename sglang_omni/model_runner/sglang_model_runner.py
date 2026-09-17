@@ -507,6 +507,17 @@ class SGLModelRunner(ModelRunner):
             )
         return result
 
+    def _decode_cuda_graph_runner_cls(self):
+        from sglang.srt.arg_groups.model_override_base import resolved_view
+
+        if resolved_view(self.server_args).dllm_algorithm == "LowConfidenceCFG":
+            from sglang_omni.models.llada2_uni.cfg_cuda_graph import (
+                LLaDA2CFGDecodeCudaGraphRunner,
+            )
+
+            return LLaDA2CFGDecodeCudaGraphRunner
+        return super()._decode_cuda_graph_runner_cls()
+
     def _prefill_cuda_graph_runner_cls(self):
         from sglang.srt.model_executor.cuda_graph_config import (
             Backend as CudaGraphBackend,
