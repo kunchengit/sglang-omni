@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from sglang_omni.config import (
+    EngineArgs,
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
@@ -18,6 +19,7 @@ PREPROCESSING_STAGE = "preprocessing"
 IMAGE_STAGE = "image_encoder"
 THINKER_STAGE = "thinker"
 DECODE_STAGE = "decode"
+IMAGE_DECODE_STAGE = "image_decode"
 
 DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
 
@@ -64,8 +66,54 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
     ]
 
 
-EntryClass = LLaDA2UniPipelineConfig
+class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
+    """LLaDA text, image generation and editing with a shared thinker."""
+
+    stages: list[StageConfig] = [
+        StageConfig(
+            name=PREPROCESSING_STAGE,
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_preprocessing_executor",
+            factory=FactoryArgs(max_seq_len=8192),
+            next=IMAGE_STAGE,
+        ),
+        StageConfig(
+            name=IMAGE_STAGE,
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_image_encoder_executor",
+            gpu=0,
+            next=THINKER_STAGE,
+        ),
+        EngineStageConfig(
+            name=THINKER_STAGE,
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
+            factory=FactoryArgs(max_seq_len=8192, dllm_algorithm="LowConfidenceCFG"),
+            engine=EngineArgs(mem_fraction_static=0.75),
+            gpu=0,
+            next=[THINKER_STAGE, DECODE_STAGE, IMAGE_DECODE_STAGE],
+            route_fn=f"{_PKG}.routing.thinker_next",
+        ),
+        StageConfig(
+            name=DECODE_STAGE,
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_decode_executor",
+            terminal=True,
+        ),
+        StageConfig(
+            name=IMAGE_DECODE_STAGE,
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_image_decode_executor",
+            factory=FactoryArgs(resolution_multiplier=2),
+            gpu=0,
+            terminal=True,
+        ),
+    ]
+
+
+EntryClass = LLaDA2UniOmniPipelineConfig
 
 Variants = {
     "text": LLaDA2UniPipelineConfig,
+    "omni": LLaDA2UniOmniPipelineConfig,
 }

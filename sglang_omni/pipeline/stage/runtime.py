@@ -1289,6 +1289,7 @@ class Stage:
             )
 
         next_stages = self.get_next(request_id, result)
+        routes_to_self = False
         if next_stages is None:
             # Terminal: notify coordinator
             _emit_event(
@@ -1308,6 +1309,14 @@ class Stage:
         else:
             if isinstance(next_stages, str):
                 next_stages = [next_stages]
+            routes_to_self = any(
+                self._resolve_target_instance(request_id, target) == self.name
+                for target in next_stages
+            )
+            if routes_to_self:
+                # A local dispatch can register the next pass synchronously.
+                # Keep its replica assignment but retire the completed pass first.
+                self._clear_request_state(request_id, keep_replica_bindings=True)
             is_single_target = len(next_stages) == 1
             _emit_event(
                 request_id=request_id,
@@ -1325,7 +1334,8 @@ class Stage:
                     stream_targets_for_request=stream_targets_for_request,
                 )
 
-        self._clear_request_state(request_id)
+        if not routes_to_self:
+            self._clear_request_state(request_id)
 
     async def _send_to_stage(
         self,
@@ -1819,7 +1829,9 @@ class Stage:
         )
         self._clear_request_state(request_id)
 
-    def _clear_request_state(self, request_id: str) -> None:
+    def _clear_request_state(
+        self, request_id: str, *, keep_replica_bindings: bool = False
+    ) -> None:
         self._active_requests.discard(request_id)
         self.input_handler.cancel(request_id)
         if self._stream_queue is not None:
@@ -1832,7 +1844,8 @@ class Stage:
         self._first_stream_chunk_seen.discard(request_id)
         self._local_stream_targets.pop(request_id, None)
         self._nonlocal_stream_targets.pop(request_id, None)
-        self._replica_bindings.pop(request_id, None)
+        if not keep_replica_bindings:
+            self._replica_bindings.pop(request_id, None)
 
     async def _handle_scheduler_crash(self, exc: BaseException) -> None:
         if self._scheduler_crash_error is not None:
