@@ -18,6 +18,9 @@ from torchvision.transforms.functional import to_pil_image
 from sglang_omni.models.llada2_uni.components.decoder_model import (
     ZImageTransformer2DModelWrapper,
 )
+from sglang_omni.models.llada2_uni.components.decoder_runtime import (
+    DecoderRuntimeHandle,
+)
 from sglang_omni.models.llada2_uni.components.sigvq import SigVQ
 from sglang_omni.models.llada2_uni.components.transport import Sampler, create_transport
 from sglang_omni.models.weight_loader import resolve_model_path
@@ -86,8 +89,9 @@ class LLaDA2ImageDecoder:
             when :meth:`decode` is called without an explicit ``decode_mode``.
         num_steps: Default number of ODE sampling steps.
         resolution_multiplier: Default upscale factor (2 = 1024px from 512px tokens).
-        backend: Only ``diffusers`` (default) is supported.
-            Native SGLang and sequence parallelism are not implemented here.
+        backend: ``diffusers`` (default) or explicitly ``sglang``.
+        runtime: Caller-owned SGLang diffusion runtime. Required by the
+            ``sglang`` backend and rejected by the ``diffusers`` backend.
     """
 
     def __init__(
@@ -100,13 +104,23 @@ class LLaDA2ImageDecoder:
         resolution_multiplier: int = 2,
         *,
         backend: str = "diffusers",
+        runtime: DecoderRuntimeHandle | None = None,
     ):
-        if backend != "diffusers":
-            raise ValueError("Image decoding supports only backend='diffusers'")
+        if backend not in {"diffusers", "sglang"}:
+            raise ValueError(f"Unsupported image decoder backend: {backend!r}")
+        if backend == "sglang" and runtime is None:
+            raise ValueError("sglang image decoder requires an initialized runtime")
+        if backend == "diffusers" and runtime is not None:
+            raise ValueError("diffusers image decoder cannot use an SGLang runtime")
         self._validate_settings(decode_mode, num_steps, resolution_multiplier)
         self.backend = backend
         self.device = torch.device(device)
         self.dtype = dtype
+        self.runtime = runtime
+        if runtime is not None:
+            runtime.validate()
+            if runtime.device != self.device or runtime.dtype != self.dtype:
+                raise ValueError("Decoder model and runtime device/dtype must match")
         self.model_path = str(resolve_model_path(model_path))
         self.decode_mode = decode_mode
         self.num_steps = num_steps
@@ -182,6 +196,7 @@ class LLaDA2ImageDecoder:
             device=self.device,
             dtype=self.dtype,
             backend=self.backend,
+            runtime=self.runtime,
         )
         self._diff_model = model
         self._diff_config = cfg
@@ -228,7 +243,7 @@ class LLaDA2ImageDecoder:
             num_steps: Override default ODE step count.
             resolution_multiplier: Override default upscale factor.
             seed: If set, draws initial noise with a deterministic generator.
-                If ``None``, each call gets fresh randomness from the global RNG.
+                If ``None``, each call draws from the global RNG.
 
         Returns:
             PIL.Image.Image
@@ -251,12 +266,12 @@ class LLaDA2ImageDecoder:
             )
 
         # Stage 1: SigVQ -> semantic features
-        self._ensure_sigvq()
         th = h * 16 * rmul
         tw = w * 16 * rmul
+        self._ensure_sigvq()
         tok = torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
         up = F.interpolate(tok, scale_factor=2, mode="nearest").long().view(1, -1)
-        cap_pos = [self._sigvq(up).squeeze(0)]
+        cap_pos = [self._sigvq(up).squeeze(0).contiguous()]
         cap_neg = [torch.zeros_like(cap_pos[0])]
 
         # Stage 2: Diffusion ODE sampling
@@ -297,7 +312,6 @@ class LLaDA2ImageDecoder:
         s = samples.to(self.dtype)
         s = (s / self._vae.config.scaling_factor) + self._vae.config.shift_factor
         px = ((self._vae.decode(s, return_dict=False)[0] + 1) / 2).clamp_(0, 1)
-
         return to_pil_image(px[0].float())
 
     @torch.inference_mode()

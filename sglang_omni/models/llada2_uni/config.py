@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Literal
+
+from pydantic import Field
 
 from sglang_omni.config import (
     EngineArgs,
@@ -22,6 +24,14 @@ DECODE_STAGE = "decode"
 IMAGE_DECODE_STAGE = "image_decode"
 
 DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
+
+
+class LLaDA2ImageDecoderFactoryArgs(FactoryArgs):
+    backend: Literal["diffusers", "sglang"] = "diffusers"
+    decode_mode: Literal["normal", "decoder-turbo"] = "normal"
+    num_steps: int = Field(default=50, ge=1)
+    resolution_multiplier: int = Field(default=2, ge=1)
+    attention_backend: str = "torch_sdpa"
 
 
 class LLaDA2UniPipelineConfig(PipelineConfig):
@@ -102,9 +112,9 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
         ),
         StageConfig(
             name=IMAGE_DECODE_STAGE,
-            process="pipeline",
+            process=IMAGE_DECODE_STAGE,
             factory_path=f"{_PKG}.stages.create_image_decode_executor",
-            factory=FactoryArgs(resolution_multiplier=2),
+            factory=LLaDA2ImageDecoderFactoryArgs(),
             gpu=0,
             terminal=True,
         ),
