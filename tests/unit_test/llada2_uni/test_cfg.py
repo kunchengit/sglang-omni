@@ -68,14 +68,18 @@ def make_cfg_group(size: int) -> list[RequestStub]:
 
 
 @pytest.mark.parametrize("size", [1, 2, 3])
-def test_guidance_updates_all_cfg_branches(size: int) -> None:
+@pytest.mark.parametrize("threshold,rescale", [(1.0, 0.0), (0.2, 0.7)])
+def test_guidance_updates_all_cfg_branches(
+    size: int, threshold: float, rescale: float
+) -> None:
     algorithm = LowConfidenceCFG(make_config())
+    algorithm.threshold = threshold
     requests = make_cfg_group(size)
     requests[0]._task_kind = "edit" if size == 3 else "t2i"
     requests[0]._dllm_steps = 3
     requests[0]._cfg_scale = 2.0
     requests[0]._cfg_image_scale = 1.5
-    requests[0]._cfg_rescale = 0.0
+    requests[0]._cfg_rescale = rescale
 
     input_ids = torch.tensor([1, 9, 9, 9] * size)
     if size > 1:
@@ -92,6 +96,11 @@ def test_guidance_updates_all_cfg_branches(size: int) -> None:
         guided_logits = branch_logits[1] + 2.0 * (branch_logits[0] - branch_logits[1])
     if size == 3:
         guided_logits += 1.5 * (branch_logits[1] - branch_logits[2])
+    if size >= 2 and rescale:
+        normalized = guided_logits * (
+            branch_logits[0].std() / (guided_logits.std() + 1e-6)
+        )
+        guided_logits = rescale * normalized + (1 - rescale) * guided_logits
     guided_logits[:3] = -torch.inf
 
     def forward(batch, **_kwargs):

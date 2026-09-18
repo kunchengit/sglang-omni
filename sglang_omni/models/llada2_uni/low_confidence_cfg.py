@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from sglang.srt.dllm.algorithm.base import DllmAlgorithm, DllmRunOutput
@@ -22,40 +21,6 @@ def _finite_cfg_value(req: object, name: str, default: float) -> float:
     return value
 
 
-def _should_force_image_only(req: object) -> bool:
-    task_kind = getattr(req, "_task_kind", "chat")
-    is_thinking_phase1 = getattr(req, "_is_thinking_phase1", False)
-    return task_kind in ("t2i", "edit") and not is_thinking_phase1
-
-
-def _get_num_transfer_tokens(block_length: int, steps: int) -> torch.Tensor:
-    """Compute per-step minimum transfer count schedule."""
-    steps = min(max(steps, 1), block_length)
-    base = block_length // steps
-    remainder = block_length % steps
-    schedule = torch.full((steps,), base, dtype=torch.int64)
-    schedule[:remainder] += 1
-    return schedule
-
-
-def _slice_cfg_output_ids(
-    ids: torch.Tensor,
-    start_list: list[int],
-    cond_idx: int,
-    *,
-    is_dllm_prefill: bool,
-) -> list[torch.Tensor]:
-    """Return physically aligned generated tokens for both CFG branches."""
-    if is_dllm_prefill:
-        return [ids[i, :0] for i in range(ids.shape[0])]
-
-    # Left padding uses mask-token IDs, so counting masks in the unconditional
-    # branch would move its output start into the prompt. CFG generation tokens
-    # are physically aligned with the conditional branch after padding.
-    generation_start = start_list[cond_idx]
-    return [ids[i, generation_start:] for i in range(ids.shape[0])]
-
-
 class LowConfidenceCFG(DllmAlgorithm):
     """LowConfidence unmasking with per-step Classifier-Free Guidance."""
 
@@ -68,309 +33,97 @@ class LowConfidenceCFG(DllmAlgorithm):
             "image_token_offset", 157184
         )
 
-    def _argmax_confidence(
-        self, logits: torch.Tensor, *, force_image_only: bool = False
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if force_image_only:
-            logits[:, : self.image_token_offset] = float("-inf")
-        ids = torch.argmax(logits, dim=-1)
-        confidence = F.softmax(logits, dim=-1).gather(-1, ids.unsqueeze(-1))
-        return ids, confidence.squeeze(-1)
-
-    def _run_standard(
+    def _run_block(
         self,
         model_runner: ModelRunner,
         forward_batch: ForwardBatch,
+        *,
+        cond_idx: int = 0,
+        no_text_idx: int | None = None,
+        no_img_idx: int | None = None,
+        cfg_text_scale: float = 1.0,
+        cfg_image_scale: float = 0.0,
+        cfg_rescale: float = 0.0,
     ) -> tuple[LogitsProcessorOutput | torch.Tensor, list[torch.Tensor], bool]:
-        batch_size = forward_batch.batch_size
-        start_list = []
-        mask_index = forward_batch.input_ids == self.mask_id
-
-        if torch.sum(mask_index).item() == 0:
+        reqs = forward_batch.reqs
+        is_cfg = no_text_idx is not None
+        if reqs and all(req.is_dllm_prefill() for req in reqs):
             out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
             return out.logits_output, [], out.can_run_graph
 
-        for block_id in range(batch_size):
-            s = block_id * self.block_size
-            e = s + self.block_size
-            blk = forward_batch.input_ids[s:e]
-            start_list.append(self.block_size - int((blk == self.mask_id).sum().item()))
+        ids = forward_batch.input_ids.view(forward_batch.batch_size, self.block_size)
+        starts = self._block_start_list(forward_batch)
+        if all(start == self.block_size for start in starts):
+            out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
+            return out.logits_output, [], out.can_run_graph
+        if is_cfg:
+            # Companion mask-token padding is not part of the generated suffix.
+            starts = [starts[cond_idx]] * forward_batch.batch_size
 
-        # Determine steps, schedule, and task kind
-        reqs = getattr(forward_batch, "reqs", None)
-        dllm_steps = self.block_size
-        force_image_only = False
-        if reqs:
-            dllm_steps = getattr(reqs[0], "_dllm_steps", None) or self.block_size
-            force_image_only = _should_force_image_only(reqs[0])
-        schedule = _get_num_transfer_tokens(self.block_size, dllm_steps)
+        req = reqs[cond_idx] if reqs else None
+        steps = getattr(req, "_dllm_steps", None) or self.block_size
+        steps = min(max(steps, 1), self.block_size)
+        base, remainder = divmod(self.block_size, steps)
+        force_image_only = getattr(req, "_task_kind", "chat") in (
+            "t2i",
+            "edit",
+        ) and not getattr(req, "_is_thinking_phase1", False)
+        active_ids = ids[cond_idx : cond_idx + 1] if is_cfg else ids
 
-        for num_to_transfer_tensor in schedule:
-            mask_index = forward_batch.input_ids == self.mask_id
-            if torch.sum(mask_index).item() == 0:
+        for step in range(steps):
+            mask = active_ids == self.mask_id
+            if not mask.any().item():
                 break
             out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
-            logits_output, _can_run_cuda_graph = out.logits_output, out.can_run_graph
-            num_to_transfer = num_to_transfer_tensor.item()
-            for bid in range(batch_size):
-                cs = bid * self.block_size
-                ce = cs + self.block_size
-                blk_ids = forward_batch.input_ids[cs:ce]
-                blk_mask = blk_ids == self.mask_id
-                if blk_mask.sum().item() == 0:
-                    continue
-                logits = logits_output.full_logits[cs:ce]
-                x, p = self._argmax_confidence(
-                    logits,
-                    force_image_only=force_image_only,
+            logits = out.logits_output.full_logits.view(
+                forward_batch.batch_size, self.block_size, -1
+            )
+            if is_cfg:
+                cond_logits = logits[cond_idx]
+                no_text_logits = logits[no_text_idx]
+                guided = no_text_logits + cfg_text_scale * (
+                    cond_logits - no_text_logits
                 )
-                x = torch.where(blk_mask, x, blk_ids)
-                conf = torch.where(blk_mask, p, -np.inf)
-                high_conf = conf > self.threshold
-                if high_conf.sum().item() >= num_to_transfer:
-                    keep = high_conf
-                else:
-                    _, idx = torch.topk(
-                        conf, k=min(num_to_transfer, blk_mask.sum().item())
+                if no_img_idx is not None:
+                    guided = guided + cfg_image_scale * (
+                        no_text_logits - logits[no_img_idx]
                     )
-                    keep = torch.zeros_like(conf, dtype=torch.bool)
-                    keep[idx] = True
-                blk_ids[keep] = x[keep]
+                if cfg_rescale > 0:
+                    rescaled = guided * (
+                        cond_logits.std(dim=-1, keepdim=True)
+                        / (guided.std(dim=-1, keepdim=True) + 1e-6)
+                    )
+                    guided = cfg_rescale * rescaled + (1.0 - cfg_rescale) * guided
+                logits = guided.unsqueeze(0)
+
+            num_to_transfer = base + (step < remainder)
+            for row, row_logits, row_mask in zip(active_ids, logits, mask):
+                if force_image_only:
+                    row_logits[:, : self.image_token_offset] = -torch.inf
+                predicted_ids = row_logits.argmax(dim=-1)
+                confidence = (
+                    F.softmax(row_logits, dim=-1)
+                    .gather(-1, predicted_ids.unsqueeze(-1))
+                    .squeeze(-1)
+                )
+                confidence = confidence.masked_fill(~row_mask, -torch.inf)
+                top_indices = confidence.topk(num_to_transfer).indices
+                keep = (confidence > self.threshold).scatter(0, top_indices, True)
+                # Top-k is a subset of high-confidence positions whenever those
+                # already meet the quota; masking also handles a shorter suffix.
+                keep &= row_mask
+                row.copy_(torch.where(keep, predicted_ids, row))
+                if is_cfg:
+                    for branch in range(forward_batch.batch_size):
+                        if branch != cond_idx:
+                            ids[branch].copy_(
+                                torch.where(keep, predicted_ids, ids[branch])
+                            )
 
         out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
-        ids = torch.reshape(forward_batch.input_ids, (batch_size, -1))
         return (
             out.logits_output,
-            [ids[i, start_list[i] :] for i in range(batch_size)],
-            out.can_run_graph,
-        )
-
-    def _run_cfg_batch2(
-        self,
-        model_runner: ModelRunner,
-        forward_batch: ForwardBatch,
-        cond_idx: int,
-        uncond_idx: int,
-        cfg_scale: float,
-        cfg_rescale: float,
-    ) -> tuple[LogitsProcessorOutput | torch.Tensor, list[torch.Tensor], bool]:
-        batch_size = forward_batch.batch_size
-        bs = self.block_size
-        reqs = getattr(forward_batch, "reqs", None)
-
-        # CFG left pads are prompt padding, so prefill only builds KV state.
-        if reqs and all(req.is_dllm_prefill() for req in reqs):
-            out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
-            return out.logits_output, [], out.can_run_graph
-
-        mask_index = forward_batch.input_ids == self.mask_id
-        if torch.sum(mask_index).item() == 0:
-            out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
-            return out.logits_output, [], out.can_run_graph
-
-        # Compute start positions for all Reqs
-        start_list = []
-        for bid in range(batch_size):
-            s = bid * bs
-            e = s + bs
-            blk = forward_batch.input_ids[s:e]
-            start_list.append(bs - int((blk == self.mask_id).sum().item()))
-
-        # Cond block boundaries
-        cs = cond_idx * bs
-        ce = cs + bs
-        # Uncond block boundaries
-        us = uncond_idx * bs
-        ue = us + bs
-
-        # Determine steps, schedule, and task kind from cond Req
-        dllm_steps = bs
-        force_image_only = False
-        if reqs and len(reqs) > cond_idx:
-            dllm_steps = getattr(reqs[cond_idx], "_dllm_steps", None) or bs
-            force_image_only = _should_force_image_only(reqs[cond_idx])
-        schedule = _get_num_transfer_tokens(bs, dllm_steps)
-
-        for num_to_transfer_tensor in schedule:
-            cond_mask = forward_batch.input_ids[cs:ce] == self.mask_id
-            num_masked_tokens = int(cond_mask.sum().item())
-            if num_masked_tokens == 0:
-                break
-
-            # Single forward (batch=2)
-            out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
-            full_logits = out.logits_output.full_logits
-
-            # Split logits
-            cond_logits = full_logits[cs:ce]
-            uncond_logits = full_logits[us:ue]
-
-            # CFG formula
-            guided = uncond_logits + cfg_scale * (cond_logits - uncond_logits)
-
-            # CFG rescale (variance normalization)
-            if cfg_rescale > 0:
-                std_c = cond_logits.std(dim=-1, keepdim=True)
-                std_g = guided.std(dim=-1, keepdim=True)
-                rescaled = guided * (std_c / (std_g + 1e-6))
-                guided = cfg_rescale * rescaled + (1.0 - cfg_rescale) * guided
-
-            # Confidence-based unmasking with the fixed transfer schedule.
-            blk_ids = forward_batch.input_ids[cs:ce]
-            x, p = self._argmax_confidence(
-                guided,
-                force_image_only=force_image_only,
-            )
-            x = torch.where(cond_mask, x, blk_ids)
-            conf = torch.where(cond_mask, p, -np.inf)
-
-            num_to_transfer = min(int(num_to_transfer_tensor.item()), num_masked_tokens)
-            high_conf = conf > self.threshold
-            if int(high_conf.sum().item()) >= num_to_transfer:
-                keep = high_conf
-            else:
-                _, idx = torch.topk(conf, k=num_to_transfer)
-                keep = torch.zeros_like(conf, dtype=torch.bool)
-                keep[idx] = True
-
-            # Write to cond block and mirror selected tokens to uncond block.
-            blk_ids[keep] = x[keep]
-            forward_batch.input_ids[us:ue][keep] = x[keep]
-
-        # Final forward
-        out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
-
-        # Prefill only builds prompt KV and must not emit prompt/padding tokens.
-        ids = torch.reshape(forward_batch.input_ids, (batch_size, -1))
-        is_dllm_prefill = bool(reqs) and all(req.is_dllm_prefill() for req in reqs)
-        next_token_ids_list = _slice_cfg_output_ids(
-            ids,
-            start_list,
-            cond_idx,
-            is_dllm_prefill=is_dllm_prefill,
-        )
-
-        return (
-            out.logits_output,
-            next_token_ids_list,
-            out.can_run_graph,
-        )
-
-    def _run_cfg_batch3(
-        self,
-        model_runner: ModelRunner,
-        forward_batch: ForwardBatch,
-        cond_idx: int,
-        no_text_idx: int,
-        no_img_idx: int,
-        cfg_text_scale: float,
-        cfg_image_scale: float,
-        cfg_rescale: float,
-    ) -> tuple[LogitsProcessorOutput | torch.Tensor, list[torch.Tensor], bool]:
-        batch_size = forward_batch.batch_size
-        bs = self.block_size
-        reqs = getattr(forward_batch, "reqs", None)
-
-        # CFG left pads are prompt padding, so prefill only builds KV state.
-        if reqs and all(req.is_dllm_prefill() for req in reqs):
-            out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
-            return out.logits_output, [], out.can_run_graph
-
-        mask_index = forward_batch.input_ids == self.mask_id
-        if torch.sum(mask_index).item() == 0:
-            out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
-            return out.logits_output, [], out.can_run_graph
-
-        # Compute start positions for all Reqs
-        start_list = []
-        for bid in range(batch_size):
-            s = bid * bs
-            e = s + bs
-            blk = forward_batch.input_ids[s:e]
-            start_list.append(bs - int((blk == self.mask_id).sum().item()))
-
-        cs = cond_idx * bs
-        ce = cs + bs
-        nt_s = no_text_idx * bs
-        nt_e = nt_s + bs
-        ni_s = no_img_idx * bs
-        ni_e = ni_s + bs
-
-        # Determine steps, schedule, and task kind from cond Req
-        dllm_steps = bs
-        force_image_only = False
-        if reqs and len(reqs) > cond_idx:
-            dllm_steps = getattr(reqs[cond_idx], "_dllm_steps", None) or bs
-            force_image_only = _should_force_image_only(reqs[cond_idx])
-        schedule = _get_num_transfer_tokens(bs, dllm_steps)
-
-        for num_to_transfer_tensor in schedule:
-            cond_mask = forward_batch.input_ids[cs:ce] == self.mask_id
-            num_masked_tokens = int(cond_mask.sum().item())
-            if num_masked_tokens == 0:
-                break
-
-            # Single forward (batch=3)
-            out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
-            full_logits = out.logits_output.full_logits
-
-            cond_logits = full_logits[cs:ce]
-            no_text_logits = full_logits[nt_s:nt_e]
-            no_img_logits = full_logits[ni_s:ni_e]
-
-            # Three-way editing CFG:
-            # logits = no_text + cfg_text*(full - no_text) + cfg_image*(no_text - no_img)
-            guided = (
-                no_text_logits
-                + cfg_text_scale * (cond_logits - no_text_logits)
-                + cfg_image_scale * (no_text_logits - no_img_logits)
-            )
-
-            # CFG rescale (variance normalization)
-            if cfg_rescale > 0:
-                std_c = cond_logits.std(dim=-1, keepdim=True)
-                std_g = guided.std(dim=-1, keepdim=True)
-                rescaled = guided * (std_c / (std_g + 1e-6))
-                guided = cfg_rescale * rescaled + (1.0 - cfg_rescale) * guided
-
-            # Confidence-based unmasking with the fixed transfer schedule.
-            blk_ids = forward_batch.input_ids[cs:ce]
-            x, p = self._argmax_confidence(
-                guided,
-                force_image_only=force_image_only,
-            )
-            x = torch.where(cond_mask, x, blk_ids)
-            conf = torch.where(cond_mask, p, -np.inf)
-
-            num_to_transfer = min(int(num_to_transfer_tensor.item()), num_masked_tokens)
-            high_conf = conf > self.threshold
-            if int(high_conf.sum().item()) >= num_to_transfer:
-                keep = high_conf
-            else:
-                _, idx = torch.topk(conf, k=num_to_transfer)
-                keep = torch.zeros_like(conf, dtype=torch.bool)
-                keep[idx] = True
-
-            # Write to cond block and mirror selected tokens to both uncond blocks.
-            blk_ids[keep] = x[keep]
-            forward_batch.input_ids[nt_s:nt_e][keep] = x[keep]
-            forward_batch.input_ids[ni_s:ni_e][keep] = x[keep]
-
-        # Final forward
-        out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
-
-        ids = torch.reshape(forward_batch.input_ids, (batch_size, -1))
-        is_dllm_prefill = bool(reqs) and all(req.is_dllm_prefill() for req in reqs)
-        next_token_ids_list = _slice_cfg_output_ids(
-            ids,
-            start_list,
-            cond_idx,
-            is_dllm_prefill=is_dllm_prefill,
-        )
-
-        return (
-            out.logits_output,
-            next_token_ids_list,
+            [row[start:] for row, start in zip(ids, starts)],
             out.can_run_graph,
         )
 
@@ -429,30 +182,24 @@ class LowConfidenceCFG(DllmAlgorithm):
             uncond_text_idx = uncond_text_indices[0]
             cfg_text_scale = _finite_cfg_value(cond_req, "_cfg_scale", 4.0)
             cfg_rescale = _finite_cfg_value(cond_req, "_cfg_rescale", 0.7)
-            if batch_size == 3:
-                uncond_img_idx = uncond_img_indices[0]
-                cfg_image_scale = _finite_cfg_value(cond_req, "_cfg_image_scale", 0.0)
-                result = self._run_cfg_batch3(
-                    model_runner,
-                    forward_batch,
-                    cond_idx,
-                    uncond_text_idx,
-                    uncond_img_idx,
-                    cfg_text_scale,
-                    cfg_image_scale,
-                    cfg_rescale,
-                )
-            else:
-                result = self._run_cfg_batch2(
-                    model_runner,
-                    forward_batch,
-                    cond_idx,
-                    uncond_text_idx,
-                    cfg_text_scale,
-                    cfg_rescale,
-                )
+            uncond_img_idx = uncond_img_indices[0] if uncond_img_indices else None
+            cfg_image_scale = (
+                _finite_cfg_value(cond_req, "_cfg_image_scale", 0.0)
+                if uncond_img_idx is not None
+                else 0.0
+            )
+            result = self._run_block(
+                model_runner,
+                forward_batch,
+                cond_idx=cond_idx,
+                no_text_idx=uncond_text_idx,
+                no_img_idx=uncond_img_idx,
+                cfg_text_scale=cfg_text_scale,
+                cfg_image_scale=cfg_image_scale,
+                cfg_rescale=cfg_rescale,
+            )
         else:
-            result = self._run_standard(model_runner, forward_batch)
+            result = self._run_block(model_runner, forward_batch)
         logits, token_ids, can_run_graph = result
         return logits, token_ids, None, None, can_run_graph
 

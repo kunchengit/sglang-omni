@@ -394,28 +394,14 @@ class DllmScheduler:
             raise RuntimeError(
                 "DLLM CFG requires synchronous execution; FDFO is unsupported"
             )
-        block_size = getattr(self.dllm_config, "block_size", None)
+        block_size = self.dllm_config.block_size
         max_prefill_tokens = get_schedule().max_prefill_tokens
-        page_size = max(int(get_schedule().page_size), 1)
-        if block_size is not None:
-            block_size = int(block_size)
-            block_charge = (block_size + page_size - 1) // page_size * page_size
-            largest_initial_extend = max(
-                len(req.origin_input_ids) + block_size for req in reqs
-            )
-            largest_initial_extend = (
-                (largest_initial_extend + page_size - 1) // page_size * page_size
-            )
-            # Every request after the first must remain strictly below the
-            # scheduler's remaining prefill budget.
-            required_prefill_tokens = (
-                largest_initial_extend + (len(reqs) - 1) * block_charge + 1
-            )
-        else:
-            required_prefill_tokens = None
+        page_size = get_schedule().page_size
+        # Chunked DLLM admission charges one block per branch, not its full prompt.
+        block_charge = (block_size + page_size - 1) // page_size * page_size
+        required_prefill_tokens = len(reqs) * block_charge
         if (
-            required_prefill_tokens is not None
-            and max_prefill_tokens is not None
+            max_prefill_tokens is not None
             and max_prefill_tokens < required_prefill_tokens
         ):
             raise RuntimeError(
@@ -434,7 +420,7 @@ class DllmScheduler:
         """Undo request and cache mutations from an incomplete group probe."""
         if not from_staging:
             for req in admitted_reqs:
-                self.tree_cache.dec_lock_ref(req.last_node, req.lock_receipt)
+                self.tree_cache.dec_lock_ref(req.last_node)
         for req, state in request_snapshots:
             req.__dict__.clear()
             req.__dict__.update(state)
@@ -683,12 +669,8 @@ class DllmScheduler:
                 new_staging.append(req)
                 continue
             self.tree_cache.cache_unfinished_req(req, chunked=True)
-            # Keep CFG rows registered between blocks so abort can release
-            # their cached prefix through the Req.kv lifecycle.
-            if req.kv.holds_kv and getattr(req, "_cfg_group_rid", None) is None:
-                # ReqToTokenPool.free takes the Req, not the int: it reads
-                # req.kv.req_pool_idx and resets it to None.
-                self.req_to_token_pool.free(req)
+            # Keep the row until finish/abort so release_kv_cache owns both
+            # cached tokens and the request slot throughout staging.
             new_staging.append(req)
         self._staging_queue = new_staging
 
