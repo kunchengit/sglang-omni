@@ -688,7 +688,7 @@ def validate_image_generation_request(req: ChatCompletionRequest) -> None:
     if req.image_generation is None:
         return
 
-    has_image = bool(req.images)
+    has_image = bool(req.images) or req.image_generation.source_image_tokens is not None
     instruction = ""
     for message in req.messages:
         content = message.content

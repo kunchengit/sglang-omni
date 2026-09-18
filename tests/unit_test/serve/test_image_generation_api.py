@@ -91,6 +91,33 @@ def test_invalid_image_parameters(params):
         ImageGenerationParams(**params)
 
 
+def test_source_image_tokens_are_validated_and_forwarded():
+    config = {
+        "source_image_tokens": {
+            "token_ids": [1, 2, 3, 4],
+            "grid_thw": [1, 2, 2],
+        }
+    }
+    request = ChatCompletionRequest(
+        messages=[{"role": "user", "content": "Make it red"}],
+        image_generation=config,
+    )
+
+    assert _build_chat_generate_request(request).metadata["image_generation"] == {
+        "source_image_tokens": {
+            "token_ids": [1, 2, 3, 4],
+            "grid_thw": (1, 2, 2),
+        }
+    }
+    with pytest.raises(ValidationError):
+        ImageGenerationParams(
+            source_image_tokens={
+                "token_ids": [1, 2, 3],
+                "grid_thw": [1, 2, 2],
+            }
+        )
+
+
 @pytest.mark.parametrize(
     "modalities", [None, [], ["text"], ["image"], ["text", "image"]]
 )

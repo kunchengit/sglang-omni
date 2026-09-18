@@ -38,6 +38,30 @@ class ChatCompletionAudio(BaseModel):
     transcript: str | None = None
 
 
+class SourceImageTokens(BaseModel):
+    """Precomputed source-image VQ tokens for image editing."""
+
+    token_ids: list[int] = Field(min_length=1)
+    grid_thw: tuple[int, int, int]
+
+    @model_validator(mode="after")
+    def validate_token_grid(self) -> SourceImageTokens:
+        grid_t, grid_h, grid_w = self.grid_thw
+        if grid_t != 1:
+            raise ValueError("source image token grid_t must be 1")
+        if grid_h <= 0 or grid_w <= 0:
+            raise ValueError("source image token grid dimensions must be positive")
+        expected = grid_t * grid_h * grid_w
+        if len(self.token_ids) != expected:
+            raise ValueError(
+                "source image token count does not match grid_thw: "
+                f"tokens={len(self.token_ids)}, expected={expected}"
+            )
+        if any(token_id < 0 for token_id in self.token_ids):
+            raise ValueError("source image token ids must be non-negative")
+        return self
+
+
 class ImageGenerationParams(BaseModel):
     """Per-request image generation and editing controls (sglang-omni extension).
 
@@ -57,6 +81,7 @@ class ImageGenerationParams(BaseModel):
     image_h: int | None = Field(default=None, ge=32, multiple_of=32)
     image_w: int | None = Field(default=None, ge=32, multiple_of=32)
     dllm_steps: int | None = Field(default=None, ge=1)
+    source_image_tokens: SourceImageTokens | None = None
 
 
 class ChatCompletionRequest(BaseModel):
