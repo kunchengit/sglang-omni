@@ -15,10 +15,7 @@ from sglang_omni.models.llada2_uni.components.preprocessor import (
     SOI_TOKEN,
     LLaDA2Preprocessor,
 )
-from sglang_omni.models.llada2_uni.config import (
-    THINKER_STAGE,
-    LLaDA2UniPipelineConfig,
-)
+from sglang_omni.models.llada2_uni.config import THINKER_STAGE, LLaDA2UniPipelineConfig
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.proto import OmniRequest, StagePayload
 

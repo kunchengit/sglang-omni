@@ -1,19 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""LowConfidence with Classifier-Free Guidance for dLLM mask diffusion.
-
-Supports three modes:
-- **batch=1 (no CFG)**: confidence-based unmasking without guidance.
-- **batch=2 (CFG)**: cond + uncond Reqs; ``guided = uncond + cfg_scale * (cond - uncond)``.
-- **batch=3 (editing CFG)**: cond + no-text + no-image Reqs; three-way guidance
-  ``guided = no_text + cfg_text*(full - no_text) + cfg_image*(no_text - no_img)``.
-
-The uncond Req is created by DllmScheduler and shares the
-same ScheduleBatch.  No manual KV cache management is needed.
-"""
+"""Classifier-free guidance for LLaDA2 mask diffusion."""
 
 from __future__ import annotations
 
-import logging
 import math
 
 import numpy as np
@@ -24,8 +13,6 @@ from sglang.srt.dllm.config import DllmConfig
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.model_runner import ModelRunner
-
-logger = logging.getLogger(__name__)
 
 
 def _finite_cfg_value(req: object, name: str, default: float) -> float:
@@ -396,14 +383,6 @@ class LowConfidenceCFG(DllmAlgorithm):
         """Run synchronous CFG generation through SGLang's DLLM contract."""
         if algo_states is not None:
             raise ValueError("LowConfidenceCFG does not accept carried FDFO state")
-        logits, token_ids, can_run_graph = self._run_impl(model_runner, forward_batch)
-        return logits, token_ids, None, None, can_run_graph
-
-    def _run_impl(
-        self,
-        model_runner: ModelRunner,
-        forward_batch: ForwardBatch,
-    ) -> tuple[LogitsProcessorOutput | torch.Tensor, list[torch.Tensor], bool]:
         reqs = getattr(forward_batch, "reqs", None)
         batch_size = forward_batch.batch_size
 
@@ -453,7 +432,7 @@ class LowConfidenceCFG(DllmAlgorithm):
             if batch_size == 3:
                 uncond_img_idx = uncond_img_indices[0]
                 cfg_image_scale = _finite_cfg_value(cond_req, "_cfg_image_scale", 0.0)
-                return self._run_cfg_batch3(
+                result = self._run_cfg_batch3(
                     model_runner,
                     forward_batch,
                     cond_idx,
@@ -463,17 +442,19 @@ class LowConfidenceCFG(DllmAlgorithm):
                     cfg_image_scale,
                     cfg_rescale,
                 )
-            return self._run_cfg_batch2(
-                model_runner,
-                forward_batch,
-                cond_idx,
-                uncond_text_idx,
-                cfg_text_scale,
-                cfg_rescale,
-            )
-
-        # Standard path (no CFG)
-        return self._run_standard(model_runner, forward_batch)
+            else:
+                result = self._run_cfg_batch2(
+                    model_runner,
+                    forward_batch,
+                    cond_idx,
+                    uncond_text_idx,
+                    cfg_text_scale,
+                    cfg_rescale,
+                )
+        else:
+            result = self._run_standard(model_runner, forward_batch)
+        logits, token_ids, can_run_graph = result
+        return logits, token_ids, None, None, can_run_graph
 
 
 Algorithm = LowConfidenceCFG

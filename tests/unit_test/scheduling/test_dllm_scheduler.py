@@ -43,6 +43,7 @@ def _scheduler(*, fdfo: bool, block_size: int = 4) -> DllmScheduler:
         block_size=block_size,
     )
     scheduler._rid_to_req_data = {}
+    scheduler._waiting_queue = []
     scheduler._cond_to_unconds = {}
     scheduler._uncond_to_cond = {}
     scheduler._uncond_rids = set()

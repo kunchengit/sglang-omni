@@ -17,7 +17,6 @@ from copy import copy
 from dataclasses import dataclass, field
 from typing import Any
 
-import torch
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.mem_cache.common import release_kv_cache
@@ -36,7 +35,7 @@ class DllmForwardBatch(ForwardBatch):
     """Keep DLLM metadata through the eager runner's dataclass batch rebuilds."""
 
     reqs: list[Req] = field(default_factory=list)
-    dllm_left_pad_lens: torch.Tensor | None = None
+    dllm_left_pad_lens_cpu: list[int] = field(default_factory=list)
 
 
 def _release_kv_once(req: Req, tree_cache: Any) -> None:
@@ -313,6 +312,7 @@ class DllmScheduler:
         left_pad_lengths = [
             int(getattr(req, "_dllm_left_pad_len", 0)) for req in batch.reqs
         ]
+        forward_batch.dllm_left_pad_lens_cpu = left_pad_lengths
         if not any(left_pad_lengths):
             return
         if any(left_pad_length < 0 for left_pad_length in left_pad_lengths):
@@ -341,12 +341,6 @@ class DllmScheduler:
                 f"CFG position span {position_start} != "
                 f"{forward_batch.positions.numel()}"
             )
-
-        forward_batch.dllm_left_pad_lens = torch.tensor(
-            left_pad_lengths,
-            dtype=forward_batch.seq_lens.dtype,
-            device=forward_batch.seq_lens.device,
-        )
 
     def _synchronize_cfg_phases(self, reqs: list[Req]) -> None:
         """Keep CFG companions in the conditional request's DLLM phase."""
