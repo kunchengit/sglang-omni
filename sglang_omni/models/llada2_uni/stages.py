@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
 
@@ -218,6 +218,12 @@ def create_image_decode_executor(
     resolution_multiplier: int = 2,
     backend: str = "diffusers",
     attention_backend: str = "torch_sdpa",
+    sp_rank: int = 0,
+    sp_size: int = 1,
+    stage_role: Literal["single", "leader", "follower"] = "single",
+    nccl_port: int | None = None,
+    ulysses_degree: int = 1,
+    ring_degree: int = 1,
 ):
     import base64
     import io
@@ -237,6 +243,14 @@ def create_image_decode_executor(
 
     concrete_device = resolve_concrete_device(device, gpu_id)
     dtype = resolve_dtype(dtype)
+    if backend != "sglang" and (
+        sp_size != 1
+        or sp_rank != 0
+        or ulysses_degree != 1
+        or ring_degree != 1
+        or stage_role != "single"
+    ):
+        raise ValueError("Decoder SP requires backend='sglang'")
     runtime = None
     if backend == "sglang":
         from sglang_omni.models.llada2_uni.components.decoder_runtime import (
@@ -248,6 +262,12 @@ def create_image_decode_executor(
             gpu_id=concrete_device.index if concrete_device.type == "cuda" else None,
             dtype=dtype,
             attention_backend=attention_backend,
+            sp_rank=sp_rank,
+            sp_size=sp_size,
+            stage_role=stage_role,
+            nccl_port=nccl_port,
+            ulysses_degree=ulysses_degree,
+            ring_degree=ring_degree,
         )
     try:
         with runtime.compute_context() if runtime else nullcontext():
@@ -290,6 +310,8 @@ def create_image_decode_executor(
             call_kwargs["num_steps"] = 8
         with runtime.compute_context() if runtime else nullcontext():
             image = decoder.decode(vq_tokens, h, w, **call_kwargs)
+        if stage_role == "follower":
+            return None
         buf = io.BytesIO()
         image.save(buf, format="PNG")
         image_b64 = base64.b64encode(buf.getvalue()).decode("ascii")

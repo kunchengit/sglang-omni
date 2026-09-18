@@ -400,7 +400,11 @@ def decode_probe(monkeypatch, tmp_path):
 
     decoder._sigvq = sigvq
     decoder._diff_model = model
-    decoder._diff_config = {"all_patch_size": [2], "all_f_patch_size": [1]}
+    decoder._diff_config = {
+        "all_patch_size": [2],
+        "all_f_patch_size": [1],
+        "cap_feat_dim": 16,
+    }
     decoder._vae = SimpleNamespace(
         config=SimpleNamespace(scaling_factor=2.0, shift_factor=3.0), decode=vae_decode
     )
@@ -446,6 +450,34 @@ def test_decode_to_bytes(decode_probe, format):
     )
     image = Image.open(io.BytesIO(data))
     assert image.format == format and image.size == (32, 32)
+
+
+def test_sp_follower_samples_without_sigvq_vae_or_image_encoding(
+    decode_probe, monkeypatch
+):
+    from contextlib import nullcontext
+
+    decoder, observed = decode_probe
+    decoder.runtime = SimpleNamespace(
+        is_leader=False,
+        preparation=lambda phase: nullcontext(),
+        request_seed=lambda metadata, seed: 19,
+        broadcast_features=lambda features: features.fill_(1),
+    )
+    monkeypatch.setattr(
+        decoder, "_ensure_sigvq", lambda: pytest.fail("follower loaded SigVQ")
+    )
+    monkeypatch.setattr(
+        decoder, "_ensure_vae", lambda: pytest.fail("follower loaded VAE")
+    )
+    assert decoder.decode_to_bytes([1, 2], 1, 2) is None
+    assert observed.ids is None and observed.latents is None
+    assert observed.calls
+    assert observed.calls[0]["cap_feats"][0].shape == (8, 16)
+    first_input = observed.calls[0]["x"][0].clone()
+    observed.calls.clear()
+    assert decoder.decode([1, 2], 1, 2) is None
+    torch.testing.assert_close(observed.calls[0]["x"][0], first_input, rtol=0, atol=0)
 
 
 def test_decode_without_seed_uses_fresh_noise(decode_probe):

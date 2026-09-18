@@ -4,9 +4,13 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 
-from sglang_omni.models.llada2_uni.config import LLaDA2UniOmniPipelineConfig
+from sglang_omni.models.llada2_uni.config import (
+    LLaDA2ImageDecoderStageConfig,
+    LLaDA2UniOmniPipelineConfig,
+)
 
 
 def test_decoder_config_roundtrip():
@@ -18,13 +22,42 @@ def test_decoder_config_roundtrip():
 
     rebuilt = LLaDA2UniOmniPipelineConfig.model_validate(data)
     stage = next(stage for stage in rebuilt.stages if stage.name == "image_decode")
-    assert stage.factory.model_extra == {
-        "attention_backend": "torch_sdpa",
-        "backend": "sglang",
-    }
+    assert isinstance(stage, LLaDA2ImageDecoderStageConfig)
+    assert stage.factory.attention_backend == "torch_sdpa"
+    assert stage.factory.backend == "sglang"
 
 
-def test_sglang_decoder_factory_owns_runtime(monkeypatch):
+@pytest.mark.parametrize("backend,degrees", [("sglang", (1, 1)), ("diffusers", (2, 1))])
+def test_sp_decoder_rejects_incompatible_configuration(backend, degrees):
+    with pytest.raises(ValueError):
+        LLaDA2ImageDecoderStageConfig(
+            name="image_decode",
+            factory_path="pkg.create",
+            gpu=[0, 1],
+            sp_size=2,
+            factory={
+                "backend": backend,
+                "ulysses_degree": degrees[0],
+                "ring_degree": degrees[1],
+            },
+        )
+
+
+def test_sp_decoder_configuration_roundtrip():
+    config = LLaDA2UniOmniPipelineConfig(model_path="unused").model_dump()
+    decoder = next(
+        stage for stage in config["stages"] if stage["name"] == "image_decode"
+    )
+    decoder.update(sp_size=2, gpu=[0, 1])
+    decoder["factory"].update(backend="sglang", ulysses_degree=2)
+    rebuilt = LLaDA2UniOmniPipelineConfig.model_validate(config)
+    stage = next(stage for stage in rebuilt.stages if stage.name == "image_decode")
+    assert stage.sp_size == 2 and stage.tp_size == 1
+    assert stage.factory.ulysses_degree == 2 and stage.gpu == [0, 1]
+
+
+@pytest.mark.parametrize("sp_rank,sp_size", [(0, 1), (0, 2), (1, 2)])
+def test_sglang_decoder_factory_owns_runtime(monkeypatch, sp_rank, sp_size):
     from sglang_omni.models.llada2_uni import merge, stages
     from sglang_omni.models.llada2_uni.components import decoder_runtime, image_decoder
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -61,7 +94,7 @@ def test_sglang_decoder_factory_owns_runtime(monkeypatch):
             assert events[-1] == "enter"
             assert kwargs == {"decode_mode": "decoder-turbo", "num_steps": 8}
             assert tokens == [3, 4] and (h, w) == (1, 2)
-            return Image.new("RGB", (8, 8))
+            return Image.new("RGB", (8, 8)) if sp_rank == 0 else None
 
     monkeypatch.setattr(decoder_runtime, "initialize_decoder_runtime", initialize)
     monkeypatch.setattr(image_decoder, "LLaDA2ImageDecoder", Decoder)
@@ -76,14 +109,33 @@ def test_sglang_decoder_factory_owns_runtime(monkeypatch):
         device="cpu",
         backend="sglang",
         attention_backend="torch_sdpa",
+        sp_rank=sp_rank,
+        sp_size=sp_size,
+        stage_role=(
+            "single" if sp_size == 1 else ("leader" if sp_rank == 0 else "follower")
+        ),
+        nccl_port=23456 if sp_size > 1 else None,
+        ulysses_degree=sp_size,
     )
     payload = SimpleNamespace(data={})
-    assert scheduler._fn(payload) is payload
-    assert payload.data["format"] == "png" and payload.data["image"]
+    result = scheduler._fn(payload)
+    if sp_rank == 0:
+        assert result is payload
+        assert payload.data["format"] == "png" and payload.data["image"]
+    else:
+        assert result is None and payload.data == {}
     assert settings == {
         "gpu_id": None,
         "dtype": settings["dtype"],
         "attention_backend": "torch_sdpa",
+        "sp_rank": sp_rank,
+        "sp_size": sp_size,
+        "stage_role": (
+            "single" if sp_size == 1 else ("leader" if sp_rank == 0 else "follower")
+        ),
+        "nccl_port": 23456 if sp_size > 1 else None,
+        "ulysses_degree": sp_size,
+        "ring_degree": 1,
     }
     assert events == ["enter", "exit", "enter", "exit"]
 
