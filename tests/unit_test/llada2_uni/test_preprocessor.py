@@ -16,6 +16,7 @@ from sglang_omni.models.llada2_uni.components.preprocessor import (
     DUMMY_IMAGE_TOKEN_ID,
     EDIT_SYSTEM_PROMPT,
     EOI_TOKEN,
+    IMAGE_TOKEN_OFFSET,
     SOI_TOKEN,
     SYSTEM_PROMPT_T2I,
     SYSTEM_PROMPT_T2I_THINKING,
@@ -27,6 +28,9 @@ from sglang_omni.models.llada2_uni.components.preprocessor import (
 )
 from sglang_omni.models.llada2_uni.config import IMAGE_STAGE
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
+from sglang_omni.models.llada2_uni.request_builders import (
+    merge_image_tokens_for_thinker,
+)
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -39,6 +43,9 @@ class Tokenizer:
         BOI_TOKEN: 156904,
         "<uncondition>": 90,
     }
+
+    def __len__(self):
+        return 157192
 
     def convert_tokens_to_ids(self, token):
         return self.tokens[token]
@@ -174,6 +181,65 @@ def test_edit_builds_source_and_three_way_cfg(preprocessor):
     assert ss["cfg_scale"] == 3
     assert ss["cfg_image_scale"] == 2
     assert state.encoder_inputs[IMAGE_STAGE]["image_grid_thw"].tolist() == [[1, 32, 32]]
+
+
+def test_edit_accepts_precomputed_source_tokens(preprocessor):
+    source_tokens = [0, 1, 2, 3, 4, 5]
+    state = run_preprocessor(
+        preprocessor,
+        generation={
+            "source_image_tokens": {
+                "token_ids": source_tokens,
+                "grid_thw": [1, 2, 3],
+            },
+            "cfg_text_scale": 4,
+        },
+    )
+
+    assert state.task_kind == "edit"
+    assert state.stream_state["image_info"] == [{"grid_h": 2, "grid_w": 3}]
+    assert state.encoder_inputs[IMAGE_STAGE] == {
+        "_skip": True,
+        "_result": {"image_token_ids": [source_tokens]},
+    }
+    assert state.prompt["input_ids"].flatten().tolist().count(
+        DUMMY_IMAGE_TOKEN_ID
+    ) == len(source_tokens)
+    input_ids = state.prompt["input_ids"].flatten().tolist()
+    uncond_ids = state.stream_state["uncond_input_ids"]
+    input_positions = [
+        index
+        for index, token_id in enumerate(input_ids)
+        if token_id == DUMMY_IMAGE_TOKEN_ID
+    ]
+    uncond_positions = [
+        index
+        for index, token_id in enumerate(uncond_ids)
+        if token_id == DUMMY_IMAGE_TOKEN_ID
+    ]
+    state.encoder_outs[IMAGE_STAGE] = state.encoder_inputs[IMAGE_STAGE]["_result"]
+
+    merge_image_tokens_for_thinker(state)
+
+    expected_tokens = [IMAGE_TOKEN_OFFSET + token_id for token_id in source_tokens]
+    input_ids = state.prompt["input_ids"].flatten().tolist()
+    uncond_ids = state.stream_state["uncond_input_ids"]
+    assert [input_ids[index] for index in input_positions] == expected_tokens
+    assert [uncond_ids[index] for index in uncond_positions] == expected_tokens
+
+
+def test_edit_rejects_raw_image_with_precomputed_tokens(preprocessor):
+    with pytest.raises(ValueError, match="either images or source_image_tokens"):
+        run_preprocessor(
+            preprocessor,
+            generation={
+                "source_image_tokens": {
+                    "token_ids": [0],
+                    "grid_thw": [1, 1, 1],
+                }
+            },
+            images=[Image.new("RGB", (32, 32))],
+        )
 
 
 def test_edit_instruction_and_single_source_required(preprocessor):

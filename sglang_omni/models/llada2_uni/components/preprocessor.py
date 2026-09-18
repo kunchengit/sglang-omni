@@ -325,14 +325,23 @@ class LLaDA2Preprocessor:
         image_generation = metadata.get("image_generation")
         task_kind = "chat"
         if isinstance(image_generation, dict):
-            task_kind = "edit" if raw_images else "t2i"
+            has_source = bool(raw_images) or (
+                image_generation.get("source_image_tokens") is not None
+            )
+            task_kind = "edit" if has_source else "t2i"
         if task_kind == "edit":
             self._require_edit_instruction(messages)
         image_cache_key = compute_image_cache_key(raw_images)
 
         images = await ensure_image_list_async(raw_images) if raw_images else []
         if task_kind == "edit":
-            return self._build_edit_payload(payload, messages, images, metadata)
+            return self._build_edit_payload(
+                payload,
+                messages,
+                images,
+                metadata,
+                source_image_tokens=image_generation.get("source_image_tokens"),
+            )
 
         encoder_inputs: dict[str, dict[str, Any]] = {}
         image_token_counts: list[int] = []
@@ -595,22 +604,44 @@ class LLaDA2Preprocessor:
         messages: list[dict[str, Any]],
         images: list[Image.Image],
         request_metadata: dict[str, Any],
+        source_image_tokens: dict[str, Any] | None = None,
     ) -> StagePayload:
         instruction = self._require_edit_instruction(messages)
-        if len(images) != 1:
-            raise ValueError("Image editing requires exactly one source image")
-        processor = self._image_processor
-        encoded = edit_image_pixel_values(
-            preprocess_image_edit(images, self._factor),
-            patch_size=processor.patch_size,
-            temporal_patch_size=processor.temporal_patch_size,
-            merge_size=processor.merge_size,
-            image_mean=processor.image_mean,
-            image_std=processor.image_std,
-            rescale_factor=processor.rescale_factor,
-        )
-        t, h, w = encoded["image_grid_thw"][0].tolist()
-        num_tokens = t * h * w
+        if source_image_tokens is not None:
+            if images:
+                raise ValueError(
+                    "Provide either images or source_image_tokens, not both"
+                )
+            token_ids = [int(token_id) for token_id in source_image_tokens["token_ids"]]
+            t, h, w = (int(value) for value in source_image_tokens["grid_thw"])
+            codebook_size = len(self._tokenizer) - IMAGE_TOKEN_OFFSET
+            if codebook_size <= 0 or any(
+                token_id >= codebook_size for token_id in token_ids
+            ):
+                raise ValueError("source image token id is outside the codebook range")
+            num_tokens = len(token_ids)
+            encoder_inputs = {
+                IMAGE_STAGE: {
+                    "_skip": True,
+                    "_result": {"image_token_ids": [token_ids]},
+                }
+            }
+        else:
+            if len(images) != 1:
+                raise ValueError("Image editing requires exactly one source image")
+            processor = self._image_processor
+            encoded = edit_image_pixel_values(
+                preprocess_image_edit(images, self._factor),
+                patch_size=processor.patch_size,
+                temporal_patch_size=processor.temporal_patch_size,
+                merge_size=processor.merge_size,
+                image_mean=processor.image_mean,
+                image_std=processor.image_std,
+                rescale_factor=processor.rescale_factor,
+            )
+            t, h, w = encoded["image_grid_thw"][0].tolist()
+            num_tokens = t * h * w
+            encoder_inputs = {IMAGE_STAGE: encoded}
         grid_h, grid_w = t * h // self._merge_size, w // self._merge_size
         source = (
             f"{SOI_TOKEN}<|reserved_token_{h}|><|reserved_token_{w}|>"
@@ -658,7 +689,7 @@ class LLaDA2Preprocessor:
                 stream_state["cfg_image_scale"] = image_scale
         state = LLaDA2UniPipelineState(
             prompt={"input_ids": input_tensor},
-            encoder_inputs={IMAGE_STAGE: encoded},
+            encoder_inputs=encoder_inputs,
             request_metadata=request_metadata,
             task_kind="edit",
             stream_state=stream_state,
