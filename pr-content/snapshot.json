@@ -1,0 +1,92 @@
+{
+  "repository": "sgl-project/sglang-omni",
+  "collaboration_repository": "kunchengit/sglang-omni",
+  "collaboration_branch": "llada2/PR-content",
+  "captured_at": "2026-09-20T07:56:03Z",
+  "pull_requests": [
+    {
+      "number": 1486,
+      "url": "https://github.com/sgl-project/sglang-omni/pull/1486",
+      "state": "open",
+      "draft": true,
+      "author": "kunchengit",
+      "head_repository": "kunchengit/sglang-omni",
+      "head_branch": "llada2/thinker-tp",
+      "github_updated_at": "2026-09-03T15:49:42Z",
+      "title_file": "1486/title.txt",
+      "body_file": "1486/body.md"
+    },
+    {
+      "number": 1487,
+      "url": "https://github.com/sgl-project/sglang-omni/pull/1487",
+      "state": "open",
+      "draft": true,
+      "author": "kunchengit",
+      "head_repository": "kunchengit/sglang-omni",
+      "head_branch": "pipeline/stream-relay",
+      "github_updated_at": "2026-09-03T15:49:42Z",
+      "title_file": "1487/title.txt",
+      "body_file": "1487/body.md"
+    },
+    {
+      "number": 1490,
+      "url": "https://github.com/sgl-project/sglang-omni/pull/1490",
+      "state": "open",
+      "draft": true,
+      "author": "kunchengit",
+      "head_repository": "kunchengit/sglang-omni",
+      "head_branch": "pipeline/stage-sp",
+      "github_updated_at": "2026-09-03T15:49:42Z",
+      "title_file": "1490/title.txt",
+      "body_file": "1490/body.md"
+    },
+    {
+      "number": 1499,
+      "url": "https://github.com/sgl-project/sglang-omni/pull/1499",
+      "state": "open",
+      "draft": true,
+      "author": "kunchengit",
+      "head_repository": "kunchengit/sglang-omni",
+      "head_branch": "llada2/native-image-generation",
+      "github_updated_at": "2026-09-03T15:49:42Z",
+      "title_file": "1499/title.txt",
+      "body_file": "1499/body.md"
+    },
+    {
+      "number": 1500,
+      "url": "https://github.com/sgl-project/sglang-omni/pull/1500",
+      "state": "open",
+      "draft": true,
+      "author": "kunchengit",
+      "head_repository": "kunchengit/sglang-omni",
+      "head_branch": "llada2/thinking-image-generation",
+      "github_updated_at": "2026-09-03T15:49:42Z",
+      "title_file": "1500/title.txt",
+      "body_file": "1500/body.md"
+    },
+    {
+      "number": 1501,
+      "url": "https://github.com/sgl-project/sglang-omni/pull/1501",
+      "state": "open",
+      "draft": true,
+      "author": "kunchengit",
+      "head_repository": "kunchengit/sglang-omni",
+      "head_branch": "llada2/decoder-sp",
+      "github_updated_at": "2026-09-18T12:16:08Z",
+      "title_file": "1501/title.txt",
+      "body_file": "1501/body.md"
+    },
+    {
+      "number": 1502,
+      "url": "https://github.com/sgl-project/sglang-omni/pull/1502",
+      "state": "open",
+      "draft": true,
+      "author": "kunchengit",
+      "head_repository": "kunchengit/sglang-omni",
+      "head_branch": "llada2/interleaved-image-generation",
+      "github_updated_at": "2026-09-03T15:49:42Z",
+      "title_file": "1502/title.txt",
+      "body_file": "1502/body.md"
+    }
+  ]
+}
