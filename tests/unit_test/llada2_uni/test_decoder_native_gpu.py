@@ -64,11 +64,11 @@ def test_sglang_backend_matches_diffusers(tmp_path, monkeypatch):
     )
     from safetensors.torch import save_file
 
-    from sglang_omni.models.llada2_uni.components.decoder_model import _decoder_config
+    from sglang_omni.models.llada2_uni.components.decoder_model import decoder_config
 
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     dtype = torch.bfloat16
-    cfg = _decoder_config(
+    cfg = decoder_config(
         {
             "dim": 768,
             "n_layers": 1,

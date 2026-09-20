@@ -75,16 +75,16 @@ def merge_image_tokens_for_thinker(state: LLaDA2UniPipelineState) -> None:
     for token_ids in image_token_ids_list:
         all_vq_tokens.extend(tid + IMAGE_TOKEN_OFFSET for tid in token_ids)
 
-    new_ids = _replace_dummy_tokens(input_ids, all_vq_tokens)
+    new_ids = replace_dummy_tokens(input_ids, all_vq_tokens)
     uncond_ids = state.stream_state.get("uncond_input_ids")
     if uncond_ids is not None:
-        state.stream_state["uncond_input_ids"] = _replace_dummy_tokens(
+        state.stream_state["uncond_input_ids"] = replace_dummy_tokens(
             uncond_ids, all_vq_tokens
         )
     prompt["input_ids"] = torch.tensor([new_ids], dtype=torch.long)
 
 
-def _replace_dummy_tokens(input_ids: list[int], vq_tokens: list[int]) -> list[int]:
+def replace_dummy_tokens(input_ids: list[int], vq_tokens: list[int]) -> list[int]:
     count = input_ids.count(DUMMY_IMAGE_TOKEN_ID)
     if count != len(vq_tokens):
         raise ValueError(
@@ -221,7 +221,7 @@ def apply_dllm_thinker_result(
     return thinker_out
 
 
-def _thinking_phase1_to_phase2(
+def thinking_phase1_to_phase2(
     state: LLaDA2UniPipelineState,
     tokenizer: Any,
     *,
@@ -316,7 +316,7 @@ def make_dllm_thinker_scheduler_adapters(
         )
         ss = state.stream_state
         if ss.get("thinking_mode") and ss.get("thinking_phase") == 1:
-            _thinking_phase1_to_phase2(state, tokenizer, stage_name=stage_name)
+            thinking_phase1_to_phase2(state, tokenizer, stage_name=stage_name)
         return StagePayload(
             request_id=payload.request_id,
             request=payload.request,

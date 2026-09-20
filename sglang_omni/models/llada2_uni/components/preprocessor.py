@@ -77,17 +77,6 @@ def align_cfg_unconditional_input_ids(
     return [int(mask_id)] * left_pad_len + list(unconditional_input_ids), left_pad_len
 
 
-def _resolve_edit_cfg_scales(image_generation: dict[str, Any]) -> tuple[float, float]:
-    if "cfg_text_scale" in image_generation:
-        text_scale = float(image_generation["cfg_text_scale"])
-    elif "cfg_scale" in image_generation:
-        legacy_scale = float(image_generation["cfg_scale"])
-        text_scale = 0.0 if legacy_scale == 1.0 else legacy_scale
-    else:
-        text_scale = 4.0
-    return text_scale, float(image_generation.get("cfg_image_scale", 0.0))
-
-
 def validate_prompt_seq_len(
     input_ids: torch.Tensor,
     *,
@@ -330,12 +319,12 @@ class LLaDA2Preprocessor:
             )
             task_kind = "edit" if has_source else "t2i"
         if task_kind == "edit":
-            self._require_edit_instruction(messages)
+            self.require_edit_instruction(messages)
         image_cache_key = compute_image_cache_key(raw_images)
 
         images = await ensure_image_list_async(raw_images) if raw_images else []
         if task_kind == "edit":
-            return self._build_edit_payload(
+            return self.build_edit_payload(
                 payload,
                 messages,
                 images,
@@ -423,7 +412,7 @@ class LLaDA2Preprocessor:
                 stream_state.update(thinking_mode=True, thinking_phase=1)
                 max_new_tokens = DEFAULT_THINKER_MAX_NEW_TOKENS
             elif mode == "normal":
-                input_ids.extend(self._build_t2i_header_ids(grid_h, grid_w))
+                input_ids.extend(self.build_t2i_header_ids(grid_h, grid_w))
                 max_new_tokens = grid_h * grid_w
                 if cfg_scale > 1.0:
                     uncond = self._tokenizer.encode(
@@ -431,8 +420,8 @@ class LLaDA2Preprocessor:
                             [{"role": "user", "content": UNCOND_TEXT}], task_kind="t2i"
                         ),
                         add_special_tokens=False,
-                    ) + self._build_t2i_header_ids(grid_h, grid_w)
-                    self._set_cfg_branch(stream_state, input_ids, uncond)
+                    ) + self.build_t2i_header_ids(grid_h, grid_w)
+                    self.set_cfg_branch(stream_state, input_ids, uncond)
             else:
                 raise ValueError(f"Unsupported image generation mode: {mode!r}")
 
@@ -549,7 +538,7 @@ class LLaDA2Preprocessor:
         parts.append(ROLE_ASSISTANT)
         return "".join(parts)
 
-    def _build_t2i_header_ids(self, grid_h: int, grid_w: int) -> list[int]:
+    def build_t2i_header_ids(self, grid_h: int, grid_w: int) -> list[int]:
         return (
             [self._soi_id]
             + self._tokenizer.encode(
@@ -560,7 +549,7 @@ class LLaDA2Preprocessor:
         )
 
     @staticmethod
-    def _extract_user_prompt_text(messages: list[dict[str, Any]]) -> str:
+    def extract_user_prompt_text(messages: list[dict[str, Any]]) -> str:
         for msg in reversed(messages):
             if msg.get("role", "user") != "user":
                 continue
@@ -578,13 +567,13 @@ class LLaDA2Preprocessor:
         return ""
 
     @classmethod
-    def _require_edit_instruction(cls, messages: list[dict[str, Any]]) -> str:
-        instruction = cls._extract_user_prompt_text(messages)
+    def require_edit_instruction(cls, messages: list[dict[str, Any]]) -> str:
+        instruction = cls.extract_user_prompt_text(messages)
         if not instruction.strip():
             raise ValueError("Image editing requires a non-empty instruction")
         return instruction
 
-    def _set_cfg_branch(
+    def set_cfg_branch(
         self,
         stream_state: dict[str, Any],
         conditional: list[int],
@@ -598,7 +587,7 @@ class LLaDA2Preprocessor:
         stream_state[f"{branch}_input_ids"] = ids
         stream_state[f"{branch}_left_pad_len"] = pad_len
 
-    def _build_edit_payload(
+    def build_edit_payload(
         self,
         payload: StagePayload,
         messages: list[dict[str, Any]],
@@ -606,7 +595,7 @@ class LLaDA2Preprocessor:
         request_metadata: dict[str, Any],
         source_image_tokens: dict[str, Any] | None = None,
     ) -> StagePayload:
-        instruction = self._require_edit_instruction(messages)
+        instruction = self.require_edit_instruction(messages)
         if source_image_tokens is not None:
             if images:
                 raise ValueError(
@@ -647,7 +636,7 @@ class LLaDA2Preprocessor:
             f"{SOI_TOKEN}<|reserved_token_{h}|><|reserved_token_{w}|>"
             f"{BOI_TOKEN}{EOI_TOKEN}"
         )
-        header = self._build_t2i_header_ids(grid_h, grid_w)
+        header = self.build_t2i_header_ids(grid_h, grid_w)
 
         def encode_prompt(text: str, *, with_image: bool = True) -> list[int]:
             prompt = self.build_prompt(
@@ -674,13 +663,20 @@ class LLaDA2Preprocessor:
         }
         if ig.get("dllm_steps") is not None:
             stream_state["dllm_steps"] = int(ig["dllm_steps"])
-        text_scale, image_scale = _resolve_edit_cfg_scales(ig)
+        if "cfg_text_scale" in ig:
+            text_scale = float(ig["cfg_text_scale"])
+        elif "cfg_scale" in ig:
+            legacy_scale = float(ig["cfg_scale"])
+            text_scale = 0.0 if legacy_scale == 1.0 else legacy_scale
+        else:
+            text_scale = 4.0
+        image_scale = float(ig.get("cfg_image_scale", 0.0))
         if text_scale > 0.0 or image_scale > 0.0:
-            self._set_cfg_branch(stream_state, input_ids, encode_prompt(UNCOND_TEXT))
+            self.set_cfg_branch(stream_state, input_ids, encode_prompt(UNCOND_TEXT))
             stream_state["cfg_scale"] = text_scale
             stream_state["cfg_rescale"] = float(ig.get("cfg_rescale", 0.7))
             if image_scale > 0.0:
-                self._set_cfg_branch(
+                self.set_cfg_branch(
                     stream_state,
                     input_ids,
                     encode_prompt(instruction, with_image=False),

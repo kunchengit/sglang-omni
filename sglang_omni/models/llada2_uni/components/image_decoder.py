@@ -28,7 +28,7 @@ from sglang_omni.models.weight_loader import resolve_model_path
 logger = logging.getLogger(__name__)
 
 
-def _create_decoder_model_fn(
+def create_decoder_model_fn(
     model, cap_pos, cap_neg, cfg_scale, patch_size, f_patch_size, dtype
 ):
     n = len(cap_pos)
@@ -112,7 +112,7 @@ class LLaDA2ImageDecoder:
             raise ValueError("sglang image decoder requires an initialized runtime")
         if backend == "diffusers" and runtime is not None:
             raise ValueError("diffusers image decoder cannot use an SGLang runtime")
-        self._validate_settings(decode_mode, num_steps, resolution_multiplier)
+        self.validate_settings(decode_mode, num_steps, resolution_multiplier)
         self.backend = backend
         self.device = torch.device(device)
         self.dtype = dtype
@@ -133,7 +133,7 @@ class LLaDA2ImageDecoder:
         self._diff_config: dict | None = None
 
     @staticmethod
-    def _validate_settings(mode, steps, resolution_multiplier):
+    def validate_settings(mode, steps, resolution_multiplier):
         if mode not in {"normal", "decoder-turbo"}:
             raise ValueError(f"Unsupported image decoder mode: {mode!r}")
         if not isinstance(steps, int) or steps < 1:
@@ -145,7 +145,7 @@ class LLaDA2ImageDecoder:
     # Lazy model loading
     # ------------------------------------------------------------------
 
-    def _ensure_sigvq(self):
+    def ensure_sigvq(self):
         if self._sigvq is not None:
             return
         sigvq_path = os.path.join(
@@ -160,7 +160,7 @@ class LLaDA2ImageDecoder:
         self._sigvq = sigvq.eval()
         logger.info("SigVQ loaded from %s", sigvq_path)
 
-    def _ensure_diff_model(self, decode_mode: str):
+    def ensure_diff_model(self, decode_mode: str):
         if decode_mode not in {"normal", "decoder-turbo"}:
             raise ValueError(f"Unsupported image decoder mode: {decode_mode!r}")
         if self._diff_model is not None and self._diff_model_mode == decode_mode:
@@ -205,7 +205,7 @@ class LLaDA2ImageDecoder:
             "Diffusion model loaded from %s (%s mode)", decoder_dir, decode_mode
         )
 
-    def _ensure_vae(self):
+    def ensure_vae(self):
         if self._vae is not None:
             return
         vae_dir = os.path.join(self.model_path, "vae")
@@ -255,7 +255,7 @@ class LLaDA2ImageDecoder:
             if resolution_multiplier is not None
             else self.resolution_multiplier
         )
-        self._validate_settings(mode, steps, rmul)
+        self.validate_settings(mode, steps, rmul)
         if not isinstance(h, int) or not isinstance(w, int) or h < 1 or w < 1:
             raise ValueError("Image decoder grid dimensions must be positive integers")
         if len(token_ids) != h * w:
@@ -268,14 +268,14 @@ class LLaDA2ImageDecoder:
         # Stage 1: SigVQ -> semantic features
         th = h * 16 * rmul
         tw = w * 16 * rmul
-        self._ensure_sigvq()
+        self.ensure_sigvq()
         tok = torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
         up = F.interpolate(tok, scale_factor=2, mode="nearest").long().view(1, -1)
         cap_pos = [self._sigvq(up).squeeze(0).contiguous()]
         cap_neg = [torch.zeros_like(cap_pos[0])]
 
         # Stage 2: Diffusion ODE sampling
-        self._ensure_diff_model(mode)
+        self.ensure_diff_model(mode)
         cfg = self._diff_config
         noise_shape = [1, 16, 1, 2 * (th // 16), 2 * (tw // 16)]
         if seed is not None:
@@ -284,7 +284,7 @@ class LLaDA2ImageDecoder:
         else:
             generator = None
             z = torch.randn(noise_shape, device=self.device)
-        model_fn = _create_decoder_model_fn(
+        model_fn = create_decoder_model_fn(
             self._diff_model,
             cap_pos,
             cap_neg,
@@ -308,7 +308,7 @@ class LLaDA2ImageDecoder:
         samples = sample_fn(z, model_fn)[-1].squeeze(2)
 
         # Stage 3: VAE decode
-        self._ensure_vae()
+        self.ensure_vae()
         s = samples.to(self.dtype)
         s = (s / self._vae.config.scaling_factor) + self._vae.config.shift_factor
         px = ((self._vae.decode(s, return_dict=False)[0] + 1) / 2).clamp_(0, 1)

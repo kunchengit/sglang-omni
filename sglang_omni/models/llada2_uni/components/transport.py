@@ -142,7 +142,7 @@ class ICPlan:
 # ---------------------------------------------------------------------------
 
 
-class _ODE:
+class ODE:
     def __init__(
         self,
         drift,
@@ -312,7 +312,7 @@ class Sampler:
                 reverse=reverse,
                 last_step_size=0.0,
             )
-            _ode = _ODE(
+            _ode = ODE(
                 drift=drift,
                 t0=t0,
                 t1=t1,

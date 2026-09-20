@@ -19,7 +19,7 @@ from torch import nn
 from .decoder_runtime import DecoderRuntimeHandle
 
 
-def _decoder_config(cfg: dict[str, Any]) -> dict[str, Any]:
+def decoder_config(cfg: dict[str, Any]) -> dict[str, Any]:
     defaults = {
         "all_patch_size": (2,),
         "all_f_patch_size": (1,),
@@ -48,7 +48,7 @@ def _decoder_config(cfg: dict[str, Any]) -> dict[str, Any]:
     return defaults
 
 
-def _semantic_checkpoint(weights):
+def semantic_checkpoint(weights):
     seen = set()
     for name, value in weights:
         if name.startswith("semantic_embedder."):
@@ -90,7 +90,7 @@ class ZImageTransformer2DModelWrapper(nn.Module):
         if backend not in {"diffusers", "sglang"}:
             raise ValueError(f"Unsupported image decoder backend: {backend!r}")
         self.backend = backend
-        self.cfg = _decoder_config(cfg)
+        self.cfg = decoder_config(cfg)
         self._native_cache = None
         if backend == "sglang":
             if runtime is None:
@@ -102,7 +102,7 @@ class ZImageTransformer2DModelWrapper(nn.Module):
                 requested_device = torch.device("cuda", torch.cuda.current_device())
             if self.runtime.dtype != dtype or self.runtime.device != requested_device:
                 raise ValueError("Decoder model and runtime device/dtype must match")
-            self.model = self._load_sglang_model(
+            self.model = self.load_sglang_model(
                 decoder_dir, self.runtime.device, dtype
             )
             return
@@ -115,11 +115,11 @@ class ZImageTransformer2DModelWrapper(nn.Module):
         with torch.device("meta"):
             model = ZImageTransformer2DModel(**self.cfg)
         checkpoint = str(Path(decoder_dir) / "model.safetensors")
-        state = dict(_semantic_checkpoint(load_file(checkpoint, device="cpu").items()))
+        state = dict(semantic_checkpoint(load_file(checkpoint, device="cpu").items()))
         model.load_state_dict(state, strict=True, assign=True)
         self.model = model.to(device=device, dtype=dtype).eval().requires_grad_(False)
 
-    def _load_sglang_model(self, decoder_dir, device, dtype):
+    def load_sglang_model(self, decoder_dir, device, dtype):
         from sglang.multimodal_gen.configs.models.dits.zimage import (
             ZImageArchConfig,
             ZImageDitConfig,
@@ -175,7 +175,7 @@ class ZImageTransformer2DModelWrapper(nn.Module):
             model = ZImageTransformer2DModel(config=config, hf_config=self.cfg)
         load_model_from_full_model_state_dict(
             model=model,
-            full_sd_iterator=_semantic_checkpoint(
+            full_sd_iterator=semantic_checkpoint(
                 safetensors_weights_iterator(
                     [str(Path(decoder_dir) / "model.safetensors")]
                 )
@@ -188,7 +188,7 @@ class ZImageTransformer2DModelWrapper(nn.Module):
         )
         return model.eval().requires_grad_(False)
 
-    def _native_forward(self, x, t, cap_feats, patch_size, f_patch_size):
+    def native_forward(self, x, t, cap_feats, patch_size, f_patch_size):
         from sglang.multimodal_gen.runtime.managers.forward_context import (
             set_forward_context,
         )
@@ -298,7 +298,7 @@ class ZImageTransformer2DModelWrapper(nn.Module):
             raise ValueError("Decoder timestep must be a scalar or batch vector")
         t = t.reshape(-1).expand(len(x))
         if self.backend == "sglang":
-            outputs = self._native_forward(x, t, cap_feats, patch_size, f_patch_size)
+            outputs = self.native_forward(x, t, cap_feats, patch_size, f_patch_size)
             if not return_dict:
                 return (outputs,)
             from diffusers.models.modeling_outputs import Transformer2DModelOutput
