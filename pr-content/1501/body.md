@@ -23,7 +23,7 @@ The API, prompt construction, and thinker remain inherited. This is decoder SP, 
 
 ## Scope and dependencies
 
-This description covers the current `pipeline/stage-sp` implementation, stacked directly on #1502 (`llada2/interleaved-image-generation`). It inherits native and thinking image generation through that dependency. #1486 is a sibling thinker-TP branch, not a prerequisite.
+The `llada2/decoder-sp` branch contains the implementation synchronized from `pipeline/stage-sp` and is stacked directly on #1502 (`llada2/interleaved-image-generation`). It inherits native and thinking image generation through that dependency. #1486 is a sibling thinker-TP branch, not a prerequisite.
 
 The generic stage SP work associated with #1490 is already included in this stack. Reconcile that overlap before merge rather than applying it twice. The comparison with `main` currently includes the earlier image-generation prerequisites.
 

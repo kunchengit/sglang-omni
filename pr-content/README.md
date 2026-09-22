@@ -29,7 +29,7 @@ branches, rather than the initial PR export. Titles remain unchanged.
 | #1500 | `llada2/thinking-image-generation` | `5c4e5c615bf0` | #1499 |
 | #1502 | `llada2/interleaved-image-generation` | `11932284ec72` | #1500 |
 | #1486 | `llada2/thinker-tp` | `f520bba6c78d` | #1502 |
-| #1501 | `pipeline/stage-sp` | `b6d0a7d82231` | #1502 |
+| #1501 | `llada2/decoder-sp` | `b6d0a7d82231` | #1502 |
 
 The dependency chain is thinker correctness -> native image -> thinking image ->
 interleaved generation, followed by separate thinker-TP and decoder-SP branches.
@@ -37,11 +37,10 @@ The interleaved branch includes shared relay work; the decoder-SP branch include
 generic stage SP work. The older #1487/#1490 descriptions are left untouched, but
 their overlapping scope must be reconciled before publication/merge.
 
-**#1501 needs an additional author check:** its live GitHub head is still
-`llada2/decoder-sp`, while the current implementation used for this description
-is `pipeline/stage-sp`. Reconcile the implementation and PR head before publishing
-that description. This documentation update does not change any PR head or code
-branch.
+The #1501 head branch, `llada2/decoder-sp`, has been synchronized with
+`pipeline/stage-sp` at `b6d0a7d82231`. Both branches now contain the same
+implementation, including the Omni-only sequence-order correction. The text
+stored here still needs to be published separately by the PR author.
 
 Validation sections distinguish historical GPU evidence from checks after the
 latest stack synchronization. Historical precomputed-token edit scores are not
