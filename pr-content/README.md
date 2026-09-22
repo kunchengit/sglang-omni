@@ -4,6 +4,14 @@ This directory is the shared editing area for the titles and descriptions of
 seven existing pull requests in `sgl-project/sglang-omni`. It belongs only to
 the `llada2/PR-content` branch of `kunchengit/sglang-omni`.
 
+The active roadmap is [LLaDA-Uni Model Support, Inference Optimization and Serving
+(#2207)](https://github.com/sgl-project/sglang-omni/issues/2207). The five refreshed
+descriptions identify these PRs as re-submissions under that roadmap, carrying
+forward the earlier work tracked in #445. Native image generation (#1499),
+thinking generation (#1500), and interleaved generation (#1502) belong to Phase 1;
+thinker TP (#1486) and decoder SP (#1501) belong to Phase 2. This records the
+roadmap relationship, not a claim that the implementations have merged.
+
 ## Pull requests
 
 | Pull request | Title | Description |

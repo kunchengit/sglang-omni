@@ -27,7 +27,9 @@ The `llada2/decoder-sp` branch contains the implementation synchronized from `pi
 
 The generic stage SP work associated with #1490 is already included in this stack. Reconcile that overlap before merge rather than applying it twice. The comparison with `main` currently includes the earlier image-generation prerequisites.
 
-Part of #445; this does not close the full roadmap.
+## Roadmap
+
+This PR is re-submitted under the new [LLaDA-Uni roadmap (#2207)](https://github.com/sgl-project/sglang-omni/issues/2207), carrying forward the earlier work tracked in #445 with a rebased implementation and updated scope. It covers **Phase 2: LLaDA-Uni image decoder sequence parallelism**. It does not close the full roadmap.
 
 ## Accuracy Test
 

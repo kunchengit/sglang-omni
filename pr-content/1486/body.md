@@ -20,7 +20,9 @@ The current branch is stacked on #1502 (`llada2/interleaved-image-generation`). 
 
 This PR changes thinker execution only. Decoder SP is tracked in #1501 and is a sibling branch, not a dependency. Expert parallelism, quantization, and request batching are out of scope.
 
-Part of #445; this does not close the full roadmap.
+## Roadmap
+
+This PR is re-submitted under the new [LLaDA-Uni roadmap (#2207)](https://github.com/sgl-project/sglang-omni/issues/2207), carrying forward the earlier work tracked in #445 with a rebased implementation and updated scope. It covers **Phase 2: LLaDA-Uni thinker tensor parallelism**, including the associated CFG CUDA Graph execution changes described above. It does not close the full roadmap.
 
 ## Accuracy Test
 

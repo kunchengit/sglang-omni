@@ -38,7 +38,9 @@ Stacked directly on #1499 (`llada2/native-image-generation`). Review the delta f
 
 This change is model-specific phase construction and routing. The shared multi-inflight relay implementation is included with #1502, not introduced here. Thinker TP and image-decoder SP remain separate follow-ups.
 
-Part of #445; this does not close the full roadmap.
+## Roadmap
+
+This PR is re-submitted under the new [LLaDA-Uni roadmap (#2207)](https://github.com/sgl-project/sglang-omni/issues/2207), carrying forward the earlier work tracked in #445 with a rebased implementation and updated scope. It covers **Phase 1: thinking-mode image generation**. It does not close the full roadmap.
 
 ## Accuracy Test
 

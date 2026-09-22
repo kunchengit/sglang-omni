@@ -48,7 +48,9 @@ Stacked on `llada2/thinker-fix`, which supplies the CFG scheduling and padding-a
 
 This PR owns the LLaDA2-Uni image pipeline and both decoder integrations at SP1. Thinking generation follows in #1500. Any overlap with #878's image-response work must be reconciled before merge; the current branch does not claim to implement that PR's response format.
 
-Part of #445; this does not close the full roadmap.
+## Roadmap
+
+This PR is re-submitted under the new [LLaDA-Uni roadmap (#2207)](https://github.com/sgl-project/sglang-omni/issues/2207), carrying forward the earlier work tracked in #445 with a rebased implementation and updated scope. It covers **Phase 1: SGLang runtime image decoder**, together with the native T2I/edit pipeline and Diffusers backend described above. It does not close the full roadmap.
 
 ## Accuracy Test
 

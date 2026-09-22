@@ -63,7 +63,11 @@ Stacked on #1500 (`llada2/thinking-image-generation`), inheriting #1499 and the 
 
 The current branch includes the shared relay/lifecycle work formerly separated as #1487. It must not be described as requiring a second copy of that code to land first. Reconcile the overlapping #1487 scope before merge; review both the model state machine and the shared runtime delta here.
 
-Thinker TP (#1486) and decoder SP (#1501) are independent follow-ups based on this branch. Part of #445; this does not close the full roadmap.
+Thinker TP (#1486) and decoder SP (#1501) are independent follow-ups based on this branch.
+
+## Roadmap
+
+This PR is re-submitted under the new [LLaDA-Uni roadmap (#2207)](https://github.com/sgl-project/sglang-omni/issues/2207), carrying forward the earlier work tracked in #445 with a rebased implementation and updated scope. It covers **Phase 1: LLaDA-Uni interleaved generation**, including the internal relay needed by that pipeline. It does not claim the Phase 3 batching/scheduling work or close the full roadmap.
 
 ## Accuracy Test
 
