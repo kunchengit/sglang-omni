@@ -1,64 +1,55 @@
-## Status
-
-Draft for scope and design feedback. This PR covers LLaDA2-Uni thinker tensor-parallel correctness and model-level decode CUDA graph support. Real-model parity, GPU validation, and performance measurements are required before either part becomes Ready.
-
 ## Motivation
 
-The pipeline already launches TP stage processes, but the thinker factory did not propagate `tp_rank`, `tp_size`, or the NCCL port. `DllmScheduler` also did not opt into TP work fanout, so follower ranks did not receive the leader payload.
-
-The sparse MoE block mixed a globally reduced shared-expert result with rank-local routed-expert partials. For LLaDA2-Uni, both paths must be combined and reduced in FP32; lower-precision accumulation/reduction caused an accuracy regression in TP validation.
-
-The model factory also forced `disable_cuda_graph=True`, preventing reuse of the generic SGLang decode CUDA graph path. Removing that model-level opt-out is expected to reduce repeated decode launch overhead, but this Draft claims no measured speedup.
-
-This work addresses the TP and related thinker-execution items in #445. It does not add EP.
+Enable tensor-parallel LLaDA2-Uni thinker execution for understanding and image generation. This also addresses two sources of overhead in the replayed implementation: per-process GPU visibility prevented custom all-reduce initialization, and the model duplicated expert routing already provided by SGLang.
 
 ## Modifications
 
-- Accept and validate pipeline-injected TP rank, size, GPU ID, and NCCL rendezvous settings.
-- Make stage topology authoritative over an optional conflicting `tp_size` server override.
-- Forward rank and rendezvous data through the existing SGLang bootstrap.
-- Expose TP rank/size and `requires_tp_work_fanout` on `DllmScheduler`; fan out only for TP greater than 1.
-- Keep routed and shared MoE outputs rank-local, combine them in FP32, perform one TP all-reduce, and cast back to the routed output dtype. TP=1 avoids the collective.
-- Stop forcing `disable_cuda_graph=True` and reuse the existing server-args builder, bootstrap, and decode graph runtime.
-- Preserve explicit eager fallback with `server_args_overrides={"disable_cuda_graph": True}`. The generic eager-prefill default is unchanged.
-- Add focused tests for TP propagation, fanout, inner-reduction disabling, collective count and dtype, default CUDA graph behavior, and explicit opt-out.
+- Propagate stage TP rank, size, GPU placement, and rendezvous settings into the thinker worker; fan out dLLM work to participating ranks.
+- Retain rank-local shared and routed expert outputs, combine them in FP32, perform one TP all-reduce, and cast back to the model dtype.
+- Reuse SGLang's `TopK` routing component while preserving the checkpoint's sigmoid scores, correction bias, normalization, and routing scale. No new Triton kernel is introduced.
+- Keep the stage's GPU set visible to each LLaDA2-Uni rank so SGLang can initialize custom all-reduce; preserve correct rank-to-device mapping.
+- Enable CFG-aware CUDA Graph execution through an Omni model-runner hook selected for `LowConfidenceCFG`, without replacing the graph runner for unrelated models.
+- Use CPU padding metadata to decide graph eligibility. A dLLM block with padding inside its active query runs eagerly; eligible blocks can replay once padding is entirely in the cached prefix, with padded cached positions excluded from attention.
+- Preserve `server_args_overrides={"disable_cuda_graph": True}` and fix inherited interleaved stage configuration so its decoder remains nonterminal.
 
-## Scope and reuse
+CUDA Graph support is part of this TP execution change. It does not imply that every prefill or every dLLM forward uses a graph, and it is not a separate planned PR.
 
-The TP factory plumbing, scheduler fanout contract, explicit CUDA graph override, and generic bootstrap are reusable by other model stages. The sparse-MoE reduction order and mandatory FP32 combine/reduce are LLaDA2-Uni correctness requirements; other models must validate their own numerical and sharding semantics.
+## Scope and dependencies
 
-Out of scope:
+The current branch is stacked on #1502 (`llada2/interleaved-image-generation`). Its comparison against `main` therefore includes the thinker correctness, native image, thinking, and interleaved prerequisites. Review the TP change relative to that branch; rebase after those prerequisites land.
 
-- expert parallelism
-- image API, CFG, image decoder, or image-generation scheduler wiring
-- production throughput and latency tuning
+This PR changes thinker execution only. Decoder SP is tracked in #1501 and is a sibling branch, not a dependency. Expert parallelism, quantization, and request batching are out of scope.
 
-## Planned split
-
-After maintainer feedback, this umbrella Draft will be replaced by two independently reviewable Ready PRs:
-
-1. **Thinker TP correctness:** runtime propagation, scheduler fanout, MoE collective semantics, and TP=1/2/4 T2T/I2T parity.
-2. **Model-level CUDA graph:** default decode graph enablement, explicit eager opt-out, eager/graph parity, memory, warm latency, and TP validation.
-
-## Related Issues
-
-Part of #445. This PR must not close the full LLaDA2-Uni support issue.
+Part of #445; this does not close the full roadmap.
 
 ## Accuracy Test
 
-### Local verification
+The latest stack synchronization passed the relevant LLaDA2-Uni and image API unit checks. Recorded GPU validation of the routing/custom-all-reduce changes also covered TP2 serving and cross-rank output-token agreement.
 
-- Focused CUDA graph and thinker TP tests: **3 passed, 4 skipped**
-- Pipeline topology and placement regression tests: **72 passed, 2 deselected**
-- Ruff check and format check: **passed**
-- Python `compileall`: **passed**
-- `git diff --check`: **passed**
+The paired routing study used the same TP2 setup for both arms, changing the router implementation:
 
-Real-model TP parity, GPU execution, eager/CUDA-graph parity, and TP=2/4 validation have not been run for this Draft.
+| Evaluation subset | Before routing replacement | SGLang TopK |
+| --- | ---: | ---: |
+| MMMU, 60 samples, VLMEvalKit API judge | 53.33% | 51.67% |
+| ImgEdit, 216 samples, official judge | 3.5370 | 3.5748 |
+| GenEval, 60 samples | 86.67% | 86.67% |
+
+These are historical subset results, not full-benchmark scores or proof of noninferiority. The ImgEdit study used precomputed source tokens through the former evaluation path; that public input has since been removed. It does not validate the current raw-image preprocessing path. The benchmark was not rerun after the latest preprocessing/branch synchronization.
+
+TP1 and TP2 are not required to produce identical pixels: routing order and floating-point reduction order can change. Quality comparisons remain necessary.
 
 ## Benchmark & Profiling
 
-No performance result is claimed. Before the split PRs become Ready, validation will report TP=1/2/4 parity, latency, throughput, memory, collective overhead, eager/graph parity, graph capture overhead, and explicit eager fallback.
+Recorded before the latest stack synchronization: H20-3e, BF16, Torch 2.13.0+cu130, SGLang 0.5.19, CUDA Graph enabled, 32-token dLLM blocks, 32 thinker steps, text CFG 4, seed 42, and 1024x1024 output. The SGLang decoder remained SP1 with 8 turbo steps; edit additionally used image CFG 1.5.
+
+Each row is the median of five unprofiled HTTP requests after three warmup requests, using SGLang TopK in both TP configurations.
+
+| Task | TP1 thinker | TP2 thinker | TP1 request E2E | TP2 request E2E |
+| --- | ---: | ---: | ---: | ---: |
+| T2I | 6.550 s | 5.674 s | 15.521 s | 14.666 s |
+| Edit | 3.863 s | 3.487 s | 12.868 s | 12.495 s |
+
+Thinker time includes stage/scheduler overhead. TP2 reduced it by 13.4% for T2I and 9.7% for edit in this workload; a short prefill did not benefit. A separate attribution trace confirmed custom all-reduce instead of NCCL and reduced routing-kernel overhead. These measurements are not a fresh benchmark of the current branch head.
 
 ## Contributors
 
@@ -66,15 +57,7 @@ No performance result is claimed. Before the split PRs become Ready, validation 
 - @btw616
 - @LiRongchuan
 
-## Checklist
+## Remaining validation
 
-- [x] Format and static checks completed.
-- [x] Focused unit tests added.
-- [x] Model/runtime boundary and explicit opt-out documented.
-- [ ] Real-model TP accuracy and GPU measurements pending.
-- [ ] Eager/CUDA graph parity and benchmarks pending.
-- [ ] For reviewers: If you have not contributed and are only assisting with merging main, please remove yourself as a co-author when merging.
-
-## CI
-
-This PR is intentionally a Draft. Self-hosted GPU CI and real-model validation will be requested after initial scope and design feedback.
+- Rerun GPU accuracy and warm performance on the final rebased head before making current-head performance claims.
+- TP4 and broader workload coverage are not claimed here.

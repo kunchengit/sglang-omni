@@ -1,46 +1,47 @@
-> Draft: requesting feedback on the LLaDA2-Uni interleaved state machine and ordered response contract. Real-checkpoint and GPU validation remain pending.
-
 ## Motivation
 
-Interleaved generation alternates text and image segments within one logical request. Each completed image frame must be decoded asynchronously while the thinker re-enters itself to continue generation, and the final response must preserve segment order without duplicating image bytes or introducing a model-specific endpoint.
-
-This PR adds the LLaDA2-Uni interleaved integration by building on the native image-generation flow, same-stage re-entry, and multi-inflight lifecycle.
+Allow one LLaDA2-Uni request to alternate text and multiple generated images. Completed image-token spans can be sent to the decoder while the thinker continues, and the final response preserves their order.
 
 ## Modifications
 
-- Add strict validation for interleaved image-generation requests and their supported controls.
-- Add an atomic text/image state machine with dynamic image headers, exact VQ-token and EOI handling, context budgeting, grouped CFG alignment, and bounded multi-frame generation.
-- Re-enter the thinker after each frame while asynchronously dispatching isolated payloads to the image decoder.
-- Support multiple in-flight payloads only for the nonterminal interleaved decoder and collect decoded frames by request and frame index.
-- Add stable frame IDs and ordered text/image-reference responses while keeping image bytes only in `message.images[]`.
-- Preserve ordered content in the client, reuse existing LLaDA2-Uni GPU budgets, add an example pipeline configuration, and cover API, routing, lifecycle, collector, and response behavior with unit tests.
+- Add the interleaved text/image state machine, generated image-header handling, VQ-span extraction, frame limits, and request context budgets.
+- Preserve the original system prompt, accumulated generation history, and phase-specific budgets/CFG across thinker re-entry.
+- Dispatch a separate frame payload when an image span completes, then continue the thinker without waiting for that frame's decoder result.
+- Include shared self-route and multi-inflight stage lifecycle support. The interleaved decoder is nonterminal; frame results and thinker completion meet in a collector keyed by request and frame identity.
+- Isolate collector state across request completion, abort, and request-ID reuse, and wait for outstanding frames before finalizing a successful response.
+- Add ordered text/image-reference content and stable frame IDs, with image bytes stored once per frame.
+- Provide `examples/configs/llada2_uni_interleaved.yaml` and matching client handling.
 
 ## Public API contract
 
-Interleaved generation uses the existing chat-completions endpoint:
+Use `/v1/chat/completions` on a deployment using the interleaved pipeline configuration:
 
 ```json
 {
+  "messages": [{"role": "user", "content": "Tell an illustrated story in three scenes"}],
   "modalities": ["text", "image"],
   "stream": false,
   "image_generation": {
-    "mode": "interleaved"
+    "mode": "interleaved",
+    "max_frames": 3,
+    "decoder_steps": 20,
+    "seed": 42
   }
 }
 ```
 
-This initial implementation supports text-only input, PNG output, and the normal decoder. It rejects source-image input, explicit `width`, `height`, or `size`, streaming, alternate output formats or decoder modes, and unknown parameters.
+This path accepts text-only input and PNG output. If `modalities` is supplied, it must request both text and image. Source images, client-specified output dimensions, unknown interleaved controls, and `stream: true` are rejected. Image dimensions come from the generated image headers.
 
-Optional controls are `max_frames`, `text_max_new_tokens`, `max_image_tokens`, `cfg_scale`, `cfg_text_scale`, `cfg_image_scale`, `cfg_rescale`, `decoder_steps`, and `seed`.
+Supported controls are `max_frames`, `text_max_new_tokens`, `image_max_new_tokens`, `max_image_tokens`, `dllm_steps`, `cfg_scale`, `cfg_text_scale`, `cfg_image_scale`, `cfg_rescale`, `decoder_steps`, `seed`, `format`, and `decode_mode`. Decoder mode may be `normal` or `decoder-turbo`. `max_frames` defaults to 10 and has no fixed 64-frame ceiling; token/context budgets still apply.
 
-Image bytes are returned only in `choices[0].message.images[]`. Ordered output is represented in `choices[0].message.content[]`:
+The response uses `choices[0].message.content[]` for ordered segments and `choices[0].message.images[]` for PNG payloads:
 
 ```json
 {
   "content": [
-    {"type": "text", "text": "First segment"},
+    {"type": "text", "text": "First scene"},
     {"type": "image_ref", "image_id": "image-request-0"},
-    {"type": "text", "text": "Second segment"}
+    {"type": "text", "text": "Then the story continues"}
   ],
   "images": [
     {
@@ -54,49 +55,27 @@ Image bytes are returned only in `choices[0].message.images[]`. Ordered output i
 }
 ```
 
-Each `image_ref` must correspond to exactly one entry in `message.images[]` in the same order. Base64 data is not duplicated in `content[]`. Existing T2I and image-edit response behavior is unchanged.
+Every image reference maps to one image in the same order. Existing single-image normal/thinking/edit responses retain their `message.image` field. This is an Omni extension to chat completions, not a new endpoint or an external SSE image-streaming protocol. Internal asynchronous relay does not imply cross-request dynamic batching.
 
-## Dependencies and review scope
+## Scope and dependencies
 
-This PR depends on #1499, #1500, and #1487. The current comparison with `main` temporarily includes integration commits for those unmerged prerequisites so the full interleaved path can be reviewed and tested. After the prerequisites are resolved, the branch will be rebased so the Ready PR contains only the LLaDA2-Uni interleaved integration.
+Stacked on #1500 (`llada2/thinking-image-generation`), inheriting #1499 and the thinker correctness prerequisite.
 
-## Related Issues
+The current branch includes the shared relay/lifecycle work formerly separated as #1487. It must not be described as requiring a second copy of that code to land first. Reconcile the overlapping #1487 scope before merge; review both the model state machine and the shared runtime delta here.
 
-Part of #445. This PR does not close the full LLaDA2-Uni support issue.
-
-Required dependencies:
-
-- #1499: native image-generation pipeline and shared image response
-- #1500: thinking-mode generation and same-stage thinker re-entry
-- #1487: model-neutral multi-inflight stage lifecycle
+Thinker TP (#1486) and decoder SP (#1501) are independent follow-ups based on this branch. Part of #445; this does not close the full roadmap.
 
 ## Accuracy Test
 
-### Local verification
+The latest stack synchronization passed LLaDA2-Uni and image API unit checks covering request/response contracts, phase transitions, frame collection, and lifecycle behavior.
 
-- Interleaved feature and contract tests: `68 passed`
-- Client completion regressions: `10 passed`
-- Black, isort, Ruff, Python `compileall`, and `git diff --check`: passed
-
-Real-checkpoint output parity, GPU execution, CUDA-graph capture/replay, and multi-frame image quality have not been validated for this Draft.
+Earlier GPU runs exercised multi-frame generation and inspected the returned images. They do not establish exact agreement with an HF baseline or a fresh quality result for the latest head. Final-head multi-frame quality and abort/concurrent-request serving should be rechecked before merge.
 
 ## Benchmark & Profiling
 
-Not run for this Draft; no latency, memory, or throughput claim is made. GPU parity, image quality, memory, and latency measurements are required before the PR is marked Ready.
+No current-head latency or throughput claim. Internal relay permits thinker/decoder overlap but does not guarantee a speedup on every GPU placement.
 
 ## Contributors
 
 - @kunchengit
 - @Anmuliar
-
-## Checklist
-
-- [x] Format the changed code.
-- [x] Add unit tests.
-- [x] Add the public request/response contract and example configuration.
-- [ ] Provide real-checkpoint and GPU validation before marking the PR Ready.
-- [ ] For reviewers: If you haven't made any contributions to this PR and are only assisting with merging the main branch, please remove yourself as a co-author when merging the PR.
-
-## CI
-
-This PR is intentionally opened as a Draft. Self-hosted GPU CI has not been requested.

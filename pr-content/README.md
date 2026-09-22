@@ -18,6 +18,37 @@ the `llada2/PR-content` branch of `kunchengit/sglang-omni`.
 
 ## Editing and publishing
 
+### Implementation mapping (2026-09-22)
+
+The five descriptions below were refreshed against the published implementation
+branches, rather than the initial PR export. Titles remain unchanged.
+
+| PR | Implementation branch in `kunchengit/sglang-omni` | Reviewed head | Immediate base |
+| --- | --- | --- | --- |
+| #1499 | `llada2/native-image-generation` | `f2e6fbbdb4a5` | `llada2/thinker-fix` (`cf71f2fbbb02`) |
+| #1500 | `llada2/thinking-image-generation` | `5c4e5c615bf0` | #1499 |
+| #1502 | `llada2/interleaved-image-generation` | `11932284ec72` | #1500 |
+| #1486 | `llada2/thinker-tp` | `f520bba6c78d` | #1502 |
+| #1501 | `pipeline/stage-sp` | `b6d0a7d82231` | #1502 |
+
+The dependency chain is thinker correctness -> native image -> thinking image ->
+interleaved generation, followed by separate thinker-TP and decoder-SP branches.
+The interleaved branch includes shared relay work; the decoder-SP branch includes
+generic stage SP work. The older #1487/#1490 descriptions are left untouched, but
+their overlapping scope must be reconciled before publication/merge.
+
+**#1501 needs an additional author check:** its live GitHub head is still
+`llada2/decoder-sp`, while the current implementation used for this description
+is `pipeline/stage-sp`. Reconcile the implementation and PR head before publishing
+that description. This documentation update does not change any PR head or code
+branch.
+
+Validation sections distinguish historical GPU evidence from checks after the
+latest stack synchronization. Historical precomputed-token edit scores are not
+claims about the raw-image path; the public `.pt` input has been removed.
+
+### Publishing workflow
+
 1. Edit the relevant `title.txt` and/or `body.md` on this collaboration branch.
    The title file contains only the PR title; the body file contains only the
    Markdown description to publish.
