@@ -29,7 +29,7 @@ class DecoderRuntimeHandle:
         self.parallel_state = parallel_state
         self.server_args_module = server_args_module
         self.runtime_context = runtime_context
-        self._precision = precision  # noqa: leading-underscore  # decoder SP contract
+        self.precision = precision
         self.world_started = False
         self.model_started = False
         self.published = False
@@ -48,11 +48,11 @@ class DecoderRuntimeHandle:
         )
         with device_context:
             state = (
-                self._precision._mixed_precision_state
-            )  # noqa: leading-underscore  # decoder SP / SGLang API
+                self.precision._mixed_precision_state
+            )  # noqa: leading-underscore  # SGLang API
             missing = object()
             previous = getattr(state, "state", missing)
-            self._precision.set_mixed_precision_policy(  # noqa: leading-underscore  # decoder SP contract
+            self.precision.set_mixed_precision_policy(
                 param_dtype=self.dtype, reduce_dtype=torch.float32
             )
             try:
@@ -85,9 +85,7 @@ class DecoderRuntimeHandle:
             )
         else:
             pass
-        if (
-            self._precision.get_compute_dtype() != self.dtype
-        ):  # noqa: leading-underscore  # decoder SP contract
+        if self.precision.get_compute_dtype() != self.dtype:
             raise RuntimeError(
                 "Decoder runtime compute dtype does not match model dtype"
             )
@@ -187,12 +185,12 @@ def initialize_decoder_runtime(
         port = sock.getsockname()[1]
     address = f"127.0.0.1:{port}"
 
-    from sglang.multimodal_gen import utils as precision
     from sglang.multimodal_gen.configs.pipeline_configs.zimage import (
         ZImagePipelineConfig,
     )
     from sglang.multimodal_gen.runtime.distributed import parallel_state as ps
     from sglang.multimodal_gen.runtime.server_args import server_args as args_module
+    from sglang.multimodal_gen.runtime.utils import precision
     from sglang.srt import runtime_context
     from sglang.srt.server_args import ServerArgs as SrtServerArgs
 
