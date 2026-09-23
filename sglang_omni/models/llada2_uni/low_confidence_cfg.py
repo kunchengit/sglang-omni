@@ -67,7 +67,7 @@ class LowConfidenceCFG(DllmAlgorithm):
         force_image_only = getattr(req, "_task_kind", "chat") in (
             "t2i",
             "edit",
-        ) and not getattr(req, "_is_thinking_phase1", False)
+        )
         active_ids = ids[cond_idx : cond_idx + 1] if is_cfg else ids
 
         for step in range(steps):
