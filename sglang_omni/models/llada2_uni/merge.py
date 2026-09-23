@@ -18,7 +18,7 @@ def extract_image_vq_tokens(
     state: LLaDA2UniPipelineState,
 ) -> tuple[list[int], int, int, dict[str, Any]] | None:
     """Return decoder codebook IDs, semantic grid size, and generation options."""
-    if state.task_kind not in ("t2i", "edit"):
+    if state.task_kind not in ("t2i", "edit", "interleaved"):
         return None
     else:
         pass
@@ -37,6 +37,10 @@ def extract_image_vq_tokens(
     else:
         pass
     image_info = state.stream_state.get("image_info", [])
+    if state.task_kind == "interleaved":
+        image_info = [state.stream_state["interleaved"]["segments"][-1]]
+    else:
+        pass
     if image_info:
         h, w = image_info[0].get("grid_h"), image_info[0].get("grid_w")
         if not (

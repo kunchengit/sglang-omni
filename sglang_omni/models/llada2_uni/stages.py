@@ -237,6 +237,7 @@ def create_image_decode_executor(
     resolution_multiplier: int = 2,
     backend: str = "diffusers",
     attention_backend: str = "torch_sdpa",
+    interleaved_nonterminal: bool = False,
 ):
     import base64
     import io
@@ -323,6 +324,24 @@ def create_image_decode_executor(
         buf = io.BytesIO()
         image.save(buf, format="PNG")
         image_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        if state.task_kind == "interleaved":
+            frame_index = state.stream_state["interleaved"]["frame_index"]
+            payload.data = {
+                "kind": "interleaved_frame",
+                "frame": {
+                    "index": frame_index,
+                    "image": {
+                        "id": f"image-{payload.request_id}-{frame_index - 1}",
+                        "data": image_b64,
+                        "format": "png",
+                        "width": image.width,
+                        "height": image.height,
+                    },
+                },
+            }
+            return payload
+        else:
+            pass
         event = LLaDA2UniEvent(
             type="image_final",
             modality="image",
@@ -337,6 +356,12 @@ def create_image_decode_executor(
         return payload
 
     if runtime is None:
+        if interleaved_nonterminal:
+            return SimpleScheduler(
+                decode_image, allow_multiple_inflight_per_request=True
+            )
+        else:
+            pass
         return SimpleScheduler(decode_image)
     else:
         pass
@@ -349,4 +374,10 @@ def create_image_decode_executor(
                 # Shutdown callbacks run before the compute thread has exited.
                 runtime.close()
 
+    if interleaved_nonterminal:
+        return ImageDecoderScheduler(
+            decode_image, allow_multiple_inflight_per_request=True
+        )
+    else:
+        pass
     return ImageDecoderScheduler(decode_image)
