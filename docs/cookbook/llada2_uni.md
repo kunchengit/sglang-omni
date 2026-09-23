@@ -103,6 +103,44 @@ images are enlarged without black padding; images already matching the grid
 are preserved. Aspect ratios beyond 4:1 or 1:4 require additional cropping.
 Image understanding retains its separate preprocessing and pixel budgets.
 
+## Interleaved Output
+
+Start the interleaved variant with `examples/configs/llada2_uni_interleaved.yaml`.
+Send `/v1/chat/completions` with text-only `messages`,
+`modalities: ["text", "image"]`, `stream: false`, and
+`image_generation: {"mode": "interleaved", "max_frames": 3}`.
+LLaDA-specific generation controls remain in `image_generation`; it does not
+use Cosmos3's Reasoner decision loop or media re-ingestion policy.
+
+The response exposes ordered `choices[0].message.segments` following the
+[Cosmos3 segment contract](https://github.com/sgl-project/sglang-omni/issues/2183).
+That shared contract is proposed in PRs #2204/#2205 and is not yet merged into
+main. `message.content` is the concatenated text view. The previous
+`message.images` table and `content[].image_ref` format are no longer emitted
+for interleaved requests.
+
+```json
+{
+  "type": "segment",
+  "session_id": "request-execution-id",
+  "segment_index": 1,
+  "kind": "image",
+  "data": {
+    "kind": "image",
+    "mime_type": "image/png",
+    "url": "data:image/png;base64,...",
+    "sha256": "sha256-of-png-bytes",
+    "size_bytes": 12345
+  }
+}
+```
+
+Text segments use `kind: "text"` and a string `data`. Indices start at zero
+and are contiguous across text and images. The session ID identifies this
+request execution. SDK `CompletionResult.segments` and buffered `/generate`
+results expose the same list. This adapter returns a completed snapshot;
+incremental `delta.segment` delivery is not enabled by this API migration.
+
 ## Text Input
 
 Send a text-only prompt and get a text response.
@@ -215,11 +253,7 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 | `images` | list | `null` | List of image file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
 
-### Incoming Features
-
-- Interleaved Generation
-
 ## Known Limitations
 
 - Image generation and editing return one image per non-streaming request.
-- Interleaved generation is not supported.
+- Interleaved generation returns a buffered segment snapshot; streaming is not supported.

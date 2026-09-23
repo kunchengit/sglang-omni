@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -328,3 +331,49 @@ def test_native_image_rejects_unsupported_controls_and_multiple_sources(api):
     )
     assert response.status_code == 400
     assert coordinator.requests == []
+
+
+def test_interleaved_chat_exposes_cosmos_segments():
+    class InterleavedCoordinator(RecordingCoordinator):
+        async def submit(self, request_id, request):
+            return {
+                "modality": "interleaved",
+                "finish_reason": "stop",
+                "content": [
+                    {"type": "text", "text": "First"},
+                    {"type": "image_ref", "image_id": "frame-0"},
+                    {"type": "text", "text": "Last"},
+                ],
+                "images": [
+                    {
+                        "id": "frame-0",
+                        "data": "cG5n",
+                        "format": "png",
+                        "width": 32,
+                        "height": 32,
+                    }
+                ],
+            }
+
+    with TestClient(create_app(Client(InterleavedCoordinator()))) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "Draw a story"}],
+                "modalities": ["text", "image"],
+                "image_generation": {"mode": "interleaved"},
+            },
+        )
+    assert response.status_code == 200, response.text
+    message = response.json()["choices"][0]["message"]
+    assert message["content"] == "FirstLast"
+    assert "images" not in message
+    segments = message["segments"]
+    assert [segment["segment_index"] for segment in segments] == [0, 1, 2]
+    assert len({segment["session_id"] for segment in segments}) == 1
+    assert [segment["kind"] for segment in segments] == ["text", "image", "text"]
+    media = segments[1]["data"]
+    payload = base64.b64decode(media["url"].split(",", 1)[1])
+    assert media["mime_type"] == "image/png"
+    assert media["size_bytes"] == len(payload)
+    assert media["sha256"] == hashlib.sha256(payload).hexdigest()

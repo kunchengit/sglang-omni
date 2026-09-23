@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from sglang_omni.proto.segments import UMMSegment
+
 
 @dataclass
 class Message:
@@ -144,6 +146,9 @@ class GenerateChunk:
     audio_data: Any = None
     sample_rate: int | None = None
     image: str | None = None  # base64-encoded PNG from the terminal result
+    content: list[dict[str, object]] | None = None
+    images: list[dict[str, object]] = field(default_factory=list)
+    segments: list[UMMSegment] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -164,6 +169,9 @@ class GenerateChunk:
             "audio_data": self.audio_data,
             "sample_rate": self.sample_rate,
             "image": self.image,
+            "content": self.content,
+            "images": self.images,
+            "segments": self.segments,
         }
 
 
@@ -211,6 +219,9 @@ class CompletionResult:
     weight_version: str | None = None
     language: str | None = None
     image: str | None = None  # base64-encoded PNG
+    content: list[dict[str, object]] | None = None
+    images: list[dict[str, object]] = field(default_factory=list)
+    segments: list[UMMSegment] | None = None
 
 
 @dataclass

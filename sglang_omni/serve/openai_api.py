@@ -93,6 +93,7 @@ from sglang_omni.serve.protocol import (
     GenerateMetaInfo,
     GenerateResponse,
     InitWeightsUpdateGroupRequest,
+    InterleavedGenerationParams,
     ModelCard,
     ModelList,
     PauseGenerationRequest,
@@ -104,6 +105,7 @@ from sglang_omni.serve.protocol import (
     UsageResponse,
     VoiceListResponse,
     WeightsCheckerRequest,
+    validate_interleaved_inputs,
 )
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
@@ -692,6 +694,16 @@ def validate_image_generation_request(req: ChatCompletionRequest) -> None:
         )
     if req.image_generation is None:
         return
+    if isinstance(req.image_generation, InterleavedGenerationParams):
+        try:
+            validate_interleaved_inputs(
+                [message.model_dump() for message in req.messages],
+                req.modalities,
+                has_media=bool(req.images or req.audios or req.videos),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return
 
     has_image = bool(req.images)
     instruction = ""
@@ -806,6 +818,10 @@ async def chat_non_stream(
 
     if "text" in requested_modalities and result.text:
         message["content"] = result.text
+
+    if isinstance(req.image_generation, InterleavedGenerationParams):
+        message["content"] = result.text
+        message["segments"] = result.segments
 
     if "audio" in requested_modalities and result.audio is not None:
         message["audio"] = {
@@ -1008,6 +1024,8 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
 
     # Determine output modalities
     output_modalities = req.modalities if req.modalities is not None else ["text"]
+    if isinstance(req.image_generation, InterleavedGenerationParams):
+        output_modalities = ["text", "image"]
 
     # Build per-stage sampling overrides
     stage_sampling: dict[str, SamplingParams] | None = None
@@ -1267,7 +1285,9 @@ def build_generate_response(
         ),
         omni_rollout=result.omni_rollout if req.return_omni_rollout else None,
     )
-    return GenerateResponse(text=result.text, audio=audio, meta_info=meta_info)
+    return GenerateResponse(
+        text=result.text, audio=audio, segments=result.segments, meta_info=meta_info
+    )
 
 
 def register_realtime(app: FastAPI) -> None:
