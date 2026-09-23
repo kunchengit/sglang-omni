@@ -83,8 +83,6 @@ class LowConfidenceCFG(DllmAlgorithm):
         ) in (  # noqa: leading-underscore  # DLLM protocol
             "t2i",
             "edit",
-        ) and not getattr(
-            req, "_is_thinking_phase1", False
         )
         active_ids = ids[cond_idx : cond_idx + 1] if is_cfg else ids
 
