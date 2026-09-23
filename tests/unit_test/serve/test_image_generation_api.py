@@ -38,7 +38,9 @@ class RecordingCoordinator:
 @pytest.fixture
 def api():
     coordinator = RecordingCoordinator()
-    app = create_app(Client(coordinator), model_name="llada2-uni")
+    app = create_app(
+        Client(coordinator), model_name="llada2-uni", supports_image_api=True
+    )
     with TestClient(app) as client:
         yield client, coordinator
 
@@ -271,3 +273,59 @@ def test_image_input_without_generation_config_remains_chat(api):
     )
     assert response.status_code == 200
     assert "image_generation" not in coordinator.requests[0].metadata
+
+
+@pytest.mark.parametrize("editing", [False, True])
+def test_native_image_routes_preserve_generation_controls(api, editing):
+    client, coordinator = api
+    fields = {
+        "prompt": "Make it red",
+        "seed": 0,
+        "guidance_scale": 4.0,
+        "num_inference_steps": 8,
+        "dllm_steps": 32,
+        "decode_mode": "decoder-turbo",
+        "response_format": "b64_json",
+    }
+    if editing:
+        response = client.post(
+            "/v1/images/edits",
+            data=fields,
+            files={"image[]": ("source.png", b"png", "image/png")},
+        )
+    else:
+        response = client.post(
+            "/v1/images/generations", json={**fields, "size": "1024x768"}
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["data"][0]["b64_json"] == "cG5n"
+    request = coordinator.requests[0]
+    options = request.metadata["image_generation"]
+    assert options["seed"] == 0
+    assert options["cfg_scale"] == 4.0
+    assert options["decoder_steps"] == 8
+    assert options["dllm_steps"] == 32
+    if editing:
+        assert request.inputs["images"] == ["data:image/png;base64,cG5n"]
+        assert "image_w" not in options
+    else:
+        assert (options["image_w"], options["image_h"]) == (1024, 768)
+
+
+def test_native_image_rejects_unsupported_controls_and_multiple_sources(api):
+    client, coordinator = api
+    for options in ({"n": 2}, {"width": 0, "height": 1024}, {"mask": "mask.png"}):
+        response = client.post(
+            "/v1/images/generations", json={"prompt": "Draw", **options}
+        )
+        assert response.status_code == 400
+    response = client.post(
+        "/v1/images/edits",
+        data={"prompt": "Edit"},
+        files=[
+            ("image", ("a.png", b"png", "image/png")),
+            ("image[]", ("b.png", b"png", "image/png")),
+        ],
+    )
+    assert response.status_code == 400
+    assert coordinator.requests == []
