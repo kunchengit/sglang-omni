@@ -32,6 +32,10 @@ from sglang_omni.models.llada2_uni.config import (
     IMAGE_STAGE,
     THINKER_STAGE,
 )
+from sglang_omni.models.llada2_uni.interleaved import (
+    advance_interleaved_state,
+    interleaved_next,
+)
 from sglang_omni.models.llada2_uni.payload_types import (
     LLaDA2UniPipelineState,
     ThinkerOutput,
@@ -165,8 +169,56 @@ def build_dllm_thinker_request(
 
     input_ids_array = array("q", input_ids.to(dtype=torch.long).flatten().tolist())
     stream_state = state.stream_state
+    interleaved = stream_state.get("interleaved")
+    phase = interleaved["phase"] if state.task_kind == "interleaved" else None
+    image_phase = phase == "image"
+    cfg_settings = stream_state
+    conditional_pad = 0
     max_new_tokens = params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS)
-    if state.thinking_phase == "text":
+    if phase == "text":
+        remaining = interleaved["max_seq_len"] - len(input_ids_array)
+        if remaining <= 0:
+            raise ValueError("interleaved text phase has exhausted thinker context")
+        else:
+            pass
+        max_new_tokens = min(interleaved["text_max_new_tokens"], remaining)
+    elif image_phase:
+        generated = len(interleaved["current_frame"]["vq_tokens"])
+        plan = interleaved["cfg_plan"]
+        branches = {"conditional": list(input_ids_array)}
+        branches.update(
+            {
+                "uncond" if name == "unconditional" else "uncond_img": ids
+                for name, ids in plan["branches"].items()
+            }
+        )
+        length = max(map(len, branches.values()))
+        max_new_tokens = min(
+            interleaved["image_max_new_tokens"] - generated,
+            interleaved["max_seq_len"] - length,
+        )
+        if max_new_tokens <= 0:
+            raise ValueError("interleaved image phase exhausted its token budget")
+        else:
+            pass
+        conditional_pad = length - len(input_ids_array)
+        input_ids_array = array(
+            "q", [tokenizer.mask_token_id] * conditional_pad + list(input_ids_array)
+        )
+        cfg_settings = {
+            "cfg_scale": plan["cfg_scale"],
+            "cfg_image_scale": plan["cfg_image_scale"],
+            "cfg_rescale": plan["cfg_rescale"],
+        }
+        for name, ids in branches.items():
+            if name != "conditional":
+                (
+                    cfg_settings[f"{name}_input_ids"],
+                    cfg_settings[f"{name}_left_pad_len"],
+                ) = align_cfg_unconditional_input_ids(tokenizer, input_ids_array, ids)
+            else:
+                pass
+    elif state.thinking_phase == "text":
         max_new_tokens = DEFAULT_THINKER_MAX_NEW_TOKENS
     elif state.task_kind in ("t2i", "edit"):
         image_info = stream_state.get("image_info", [])
@@ -190,8 +242,12 @@ def build_dllm_thinker_request(
         top_k=params.get("top_k", -1),
         min_p=params.get("min_p", 0.0),
         repetition_penalty=params.get("repetition_penalty", 1.0),
-        stop=params.get("stop") or [],
-        stop_token_ids=params.get("stop_token_ids") or [],
+        stop=[] if image_phase else params.get("stop") or [],
+        stop_token_ids=(
+            [tokenizer.convert_tokens_to_ids("<|/image|>")]
+            if image_phase
+            else params.get("stop_token_ids") or []
+        ),
         sampling_seed=params.get("seed"),
     )
     sampling_params.normalize(tokenizer)
@@ -199,10 +255,12 @@ def build_dllm_thinker_request(
 
     eos_token_id = tokenizer.eos_token_id
     eos_token_ids = {eos_token_id} if eos_token_id is not None else None
-    if state.thinking_phase == "text":
+    if state.thinking_phase == "text" or phase == "text":
         eos_token_ids = (eos_token_ids or set()) | {
             tokenizer.convert_tokens_to_ids(BOI_TOKEN)
         }
+    elif image_phase:
+        eos_token_ids = {tokenizer.convert_tokens_to_ids("<|/image|>")}
     else:
         pass
 
@@ -216,38 +274,57 @@ def build_dllm_thinker_request(
         eos_token_ids=eos_token_ids,
         dllm_config=dllm_config,
     )
-    req.tokenizer = tokenizer
+    # note (Anmuliar): Image passes must stop at EOI, not tokenizer EOS aliases.
+    req.tokenizer = None if image_phase else tokenizer
 
     req.omni_model_inputs = None
     req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
     req._task_kind = (  # noqa: leading-underscore  # DLLM protocol
         "thinking" if state.thinking_phase == "text" else state.task_kind
     )
+    if image_phase:
+        req._task_kind = (
+            "interleaved_image"  # noqa: leading-underscore  # DLLM protocol
+        )
+        req._dllm_left_pad_len = (
+            conditional_pad  # noqa: leading-underscore  # DLLM protocol
+        )
+        req._allowed_stop_token_ids = tuple(
+            eos_token_ids
+        )  # noqa: leading-underscore  # DLLM protocol
+    else:
+        pass
     if stream_state.get("dllm_steps") is not None:
         req._dllm_steps = int(
             stream_state["dllm_steps"]
         )  # noqa: leading-underscore  # DLLM protocol
     else:
         pass
+    if image_phase:
+        req._dllm_steps = interleaved[
+            "dllm_steps"
+        ]  # noqa: leading-underscore  # DLLM protocol
+    else:
+        pass
 
-    uncond_ids = stream_state.get("uncond_input_ids")
+    uncond_ids = cfg_settings.get("uncond_input_ids")
     if uncond_ids is not None:
-        req._cfg_scale = stream_state[
+        req._cfg_scale = cfg_settings[
             "cfg_scale"
         ]  # noqa: leading-underscore  # DLLM protocol
-        req._cfg_rescale = stream_state[
+        req._cfg_rescale = cfg_settings[
             "cfg_rescale"
         ]  # noqa: leading-underscore  # DLLM protocol
         for branch in ("uncond", "uncond_img"):
             if branch == "uncond":
                 branch_ids = uncond_ids
-                pad_len = stream_state["uncond_left_pad_len"]
+                pad_len = cfg_settings["uncond_left_pad_len"]
             else:
-                branch_ids = stream_state.get("uncond_img_input_ids")
+                branch_ids = cfg_settings.get("uncond_img_input_ids")
                 if branch_ids is None:
                     continue
                 else:
-                    pad_len = stream_state["uncond_img_left_pad_len"]
+                    pad_len = cfg_settings["uncond_img_left_pad_len"]
             if len(branch_ids) != len(input_ids_array):
                 raise ValueError("CFG branches must have equal physical lengths")
             else:
@@ -270,8 +347,8 @@ def build_dllm_thinker_request(
                 req._uncond_img_left_pad_len = (
                     pad_len  # noqa: leading-underscore  # DLLM protocol
                 )
-        if stream_state.get("uncond_img_input_ids") is not None:
-            req._cfg_image_scale = stream_state[
+        if cfg_settings.get("uncond_img_input_ids") is not None:
+            req._cfg_image_scale = cfg_settings[
                 "cfg_image_scale"
             ]  # noqa: leading-underscore  # DLLM protocol
         else:
@@ -361,6 +438,10 @@ def thinking_phase1_to_phase2(
 def thinker_next(request_id: str, output: StagePayload) -> str | list[str]:
     """Re-enter the thinker once before delivering the text and image results."""
     state = LLaDA2UniPipelineState.from_dict(output.data)
+    if state.task_kind == "interleaved":
+        return interleaved_next(request_id, output)
+    else:
+        pass
     if state.thinking_phase == "image" and state.thinker_out is None:
         return THINKER_STAGE
     else:
@@ -379,6 +460,18 @@ def make_dllm_thinker_scheduler_adapters(
 
     def request_builder(payload: StagePayload) -> SGLangDLLMRequestData:
         state = LLaDA2UniPipelineState.from_dict(payload.data)
+        if state.task_kind == "interleaved":
+            interleaved = state.stream_state["interleaved"]
+            interleaved.pop("emit_frame", None)
+            state.thinker_out = None
+            state.engine_outputs.pop(stage_name, None)
+            payload = StagePayload(
+                request_id=payload.request_id,
+                request=payload.request,
+                data=state.to_dict(),
+            )
+        else:
+            pass
         data = build_dllm_thinker_request(
             state,
             params=payload.request.params,
@@ -402,6 +495,15 @@ def make_dllm_thinker_scheduler_adapters(
                 output_ids=data.output_ids,
                 finish_reason=data.finish_reason,
             )
+            if state.task_kind == "interleaved":
+                advance_interleaved_state(
+                    state,
+                    tokenizer,
+                    completed_phase=state.stream_state["interleaved"]["phase"],
+                    finish_reason=data.finish_reason,
+                )
+            else:
+                pass
         return StagePayload(
             request_id=payload.request_id,
             request=payload.request,
