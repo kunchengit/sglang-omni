@@ -266,6 +266,10 @@ def create_image_decode_executor(
         state = LLaDA2UniPipelineState.from_dict(payload.data)
         result = extract_image_vq_tokens(state)
         if result is None:
+            if state.task_kind in ("t2i", "edit"):
+                raise ValueError(
+                    f"{state.task_kind} request did not produce image VQ tokens"
+                )
             payload.data = {"events": [], "modality": "image", "skipped": True}
             return payload
 

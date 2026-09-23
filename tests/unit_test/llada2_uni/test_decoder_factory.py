@@ -4,6 +4,7 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 
 from sglang_omni.models.llada2_uni.config import LLaDA2UniOmniPipelineConfig
@@ -90,3 +91,19 @@ def test_sglang_decoder_factory_owns_runtime(monkeypatch):
     monkeypatch.setattr(SimpleScheduler, "start", lambda self: events.append("done"))
     scheduler.start()
     assert events[-2:] == ["done", "close"]
+
+
+def test_image_request_without_vq_tokens_fails(monkeypatch):
+    from sglang_omni.models.llada2_uni import merge, stages
+    from sglang_omni.models.llada2_uni.components import image_decoder
+
+    monkeypatch.setattr(
+        image_decoder,
+        "LLaDA2ImageDecoder",
+        lambda **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(merge, "extract_image_vq_tokens", lambda _state: None)
+
+    scheduler = stages.create_image_decode_executor("unused", device="cpu")
+    with pytest.raises(ValueError, match="did not produce image VQ tokens"):
+        scheduler._fn(SimpleNamespace(data={"task_kind": "t2i"}))
