@@ -23,6 +23,8 @@ class UsageInfoDict(TokenUsageDict, total=False):
 # did not say how generation ended.
 UNKNOWN_FINISH_REASON = "unknown"
 
+from sglang_omni.proto.segments import UMMSegment
+
 
 @dataclass
 class Message:
@@ -166,6 +168,9 @@ class GenerateChunk:
     audio_data: object = None
     sample_rate: int | None = None
     image: str | None = None  # base64-encoded PNG from the terminal result
+    content: list[dict[str, object]] | None = None
+    images: list[dict[str, object]] = field(default_factory=list)
+    segments: list[UMMSegment] | None = None
 
     @property
     def reported_finish_reason(self) -> str:
@@ -194,6 +199,9 @@ class GenerateChunk:
             "audio_data": self.audio_data,
             "sample_rate": self.sample_rate,
             "image": self.image,
+            "content": self.content,
+            "images": self.images,
+            "segments": self.segments,
         }
 
 
@@ -241,6 +249,9 @@ class CompletionResult:
     weight_version: str | None = None
     language: str | None = None
     image: str | None = None  # base64-encoded PNG
+    content: list[dict[str, object]] | None = None
+    images: list[dict[str, object]] = field(default_factory=list)
+    segments: list[UMMSegment] | None = None
 
 
 @dataclass
