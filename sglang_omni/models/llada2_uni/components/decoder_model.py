@@ -99,7 +99,7 @@ class ZImageTransformer2DModelWrapper(nn.Module):
             pass
         self.backend = backend
         self.cfg = decoder_config(cfg)
-        self._native_cache = None  # noqa: leading-underscore  # decoder SP contract
+        self.native_cache = None
         if backend == "sglang":
             if runtime is None:
                 raise ValueError("sglang decoder requires an initialized runtime")
@@ -222,9 +222,7 @@ class ZImageTransformer2DModelWrapper(nn.Module):
             f_patch_size,
         )
         spatial = self.spatial_config
-        if (
-            self._native_cache is None or self._native_cache[0] != key
-        ):  # noqa: leading-underscore  # decoder SP contract
+        if self.native_cache is None or self.native_cache[0] != key:
             self.runtime.validate()
             if any(image.shape != x[0].shape for image in x) or any(
                 cap.shape != cap_feats[0].shape for cap in cap_feats
@@ -262,16 +260,14 @@ class ZImageTransformer2DModelWrapper(nn.Module):
                 )
             else:
                 pass
-            self._native_cache = (
+            self.native_cache = (
                 key,
                 batch,
                 cond,
-            )  # noqa: leading-underscore  # decoder SP contract
+            )
         else:
             pass
-        _, batch, cond = (
-            self._native_cache
-        )  # noqa: leading-underscore  # decoder SP contract
+        _, batch, cond = self.native_cache
         full = torch.stack(x)
         local, _ = spatial.shard_latents_for_sp(batch, full)
         with set_forward_context(
