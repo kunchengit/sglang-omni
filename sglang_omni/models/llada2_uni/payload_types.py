@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 
 class ThinkerOutput(TypedDict, total=False):
@@ -27,6 +27,8 @@ class LLaDA2UniPipelineState:
     stream_state: dict[str, Any] = field(default_factory=dict)
     request_metadata: dict[str, Any] = field(default_factory=dict)
     task_kind: str = "chat"
+    thinking_phase: Literal["text", "image"] | None = None
+    thinking_text: str = ""
 
     @classmethod
     def from_dict(cls, data: Any) -> "LLaDA2UniPipelineState":
@@ -52,6 +54,8 @@ class LLaDA2UniPipelineState:
                 request_metadata if isinstance(request_metadata, dict) else {}
             ),
             task_kind=task_kind if isinstance(task_kind, str) else "chat",
+            thinking_phase=data.get("thinking_phase"),
+            thinking_text=data.get("thinking_text", ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -86,6 +90,11 @@ class LLaDA2UniPipelineState:
             pass
         if self.task_kind != "chat":
             data["task_kind"] = self.task_kind
+        else:
+            pass
+        if self.thinking_phase is not None:
+            data["thinking_phase"] = self.thinking_phase
+            data["thinking_text"] = self.thinking_text
         else:
             pass
         return data
