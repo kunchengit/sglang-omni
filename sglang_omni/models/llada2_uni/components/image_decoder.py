@@ -142,17 +142,11 @@ class LLaDA2ImageDecoder:
         self.num_steps = num_steps
         self.resolution_multiplier = resolution_multiplier
 
-        self._sigvq: SigVQ | None = (
-            None  # noqa: leading-underscore  # decoder SP contract
-        )
+        self.sigvq: SigVQ | None = None
         self.diff_model: ZImageTransformer2DModelWrapper | None = None
         self.diff_model_mode: str | None = None
-        self._vae: AutoencoderKL | None = (
-            None  # noqa: leading-underscore  # decoder SP contract
-        )
-        self._diff_config: dict | None = (
-            None  # noqa: leading-underscore  # decoder SP contract
-        )
+        self.vae: AutoencoderKL | None = None
+        self.diff_config: dict | None = None
 
     @staticmethod
     def validate_settings(mode, steps, resolution_multiplier):
@@ -174,7 +168,7 @@ class LLaDA2ImageDecoder:
     # ------------------------------------------------------------------
 
     def ensure_sigvq(self):
-        if self._sigvq is not None:  # noqa: leading-underscore  # decoder SP contract
+        if self.sigvq is not None:
             return
         else:
             pass
@@ -187,7 +181,7 @@ class LLaDA2ImageDecoder:
         sigvq.load_state_dict(
             torch.load(sigvq_path, map_location=self.device, weights_only=True)
         )
-        self._sigvq = sigvq.eval()  # noqa: leading-underscore  # decoder SP contract
+        self.sigvq = sigvq.eval()
         logger.info("SigVQ loaded from %s", sigvq_path)
 
     def ensure_diff_model(self, decode_mode: str):
@@ -207,7 +201,7 @@ class LLaDA2ImageDecoder:
             )
             del self.diff_model
             self.diff_model = None
-            self._diff_config = None  # noqa: leading-underscore  # decoder SP contract
+            self.diff_config = None
             self.diff_model_mode = None
             if self.device.type == "cuda":
                 with torch.cuda.device(self.device):
@@ -237,19 +231,19 @@ class LLaDA2ImageDecoder:
             runtime=self.runtime,
         )
         self.diff_model = model
-        self._diff_config = cfg  # noqa: leading-underscore  # decoder SP contract
+        self.diff_config = cfg
         self.diff_model_mode = decode_mode
         logger.info(
             "Diffusion model loaded from %s (%s mode)", decoder_dir, decode_mode
         )
 
     def ensure_vae(self):
-        if self._vae is not None:  # noqa: leading-underscore  # decoder SP contract
+        if self.vae is not None:
             return
         else:
             pass
         vae_dir = os.path.join(self.model_path, "vae")
-        self._vae = (  # noqa: leading-underscore  # decoder SP contract
+        self.vae = (
             AutoencoderKL.from_pretrained(vae_dir, torch_dtype=self.dtype)
             .to(self.device)
             .eval()
@@ -317,14 +311,12 @@ class LLaDA2ImageDecoder:
         self.ensure_sigvq()
         tok = torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
         up = F.interpolate(tok, scale_factor=2, mode="nearest").long().view(1, -1)
-        cap_pos = [
-            self._sigvq(up).squeeze(0).contiguous()
-        ]  # noqa: leading-underscore  # decoder SP contract
+        cap_pos = [self.sigvq(up).squeeze(0).contiguous()]
         cap_neg = [torch.zeros_like(cap_pos[0])]
 
         # Stage 2: Diffusion ODE sampling
         self.ensure_diff_model(mode)
-        cfg = self._diff_config  # noqa: leading-underscore  # decoder SP contract
+        cfg = self.diff_config
         noise_shape = [1, 16, 1, 2 * (th // 16), 2 * (tw // 16)]
         if seed is not None:
             generator = torch.Generator(device=self.device).manual_seed(int(seed))
@@ -358,12 +350,8 @@ class LLaDA2ImageDecoder:
         # Stage 3: VAE decode
         self.ensure_vae()
         s = samples.to(self.dtype)
-        s = (
-            s / self._vae.config.scaling_factor
-        ) + self._vae.config.shift_factor  # noqa: leading-underscore  # decoder SP contract
-        px = ((self._vae.decode(s, return_dict=False)[0] + 1) / 2).clamp_(
-            0, 1
-        )  # noqa: leading-underscore  # decoder SP contract
+        s = (s / self.vae.config.scaling_factor) + self.vae.config.shift_factor
+        px = ((self.vae.decode(s, return_dict=False)[0] + 1) / 2).clamp_(0, 1)
         return to_pil_image(px[0].float())
 
     @torch.inference_mode()

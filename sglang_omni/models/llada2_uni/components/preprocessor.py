@@ -334,6 +334,13 @@ class LLaDA2Preprocessor:
 
         metadata = request.metadata if isinstance(request.metadata, dict) else {}
         image_generation = metadata.get("image_generation")
+        if image_generation is None and "image" in metadata.get(
+            "output_modalities", []
+        ):
+            image_generation = {}
+            metadata = {**metadata, "image_generation": image_generation}
+        else:
+            pass
         task_kind = "chat"
         if isinstance(image_generation, dict):
             task_kind = "edit" if raw_images else "t2i"

@@ -80,6 +80,7 @@ from sglang_omni.proto.admin import AdminResponse
 from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
+from sglang_omni.serve.images import register_images
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
     DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -202,6 +203,7 @@ def create_app(
     client: Client,
     *,
     model_name: str | None = None,
+    supports_image_api: bool = False,
     requires_uploaded_voice_for_named_voice: bool = False,
     supports_uploaded_voice_references: bool = True,
     custom_voice_config: CustomVoiceConfig | None = None,
@@ -227,6 +229,7 @@ def create_app(
     Args:
         client: Client instance connected to the pipeline coordinator.
         model_name: Default model name to report in responses and /v1/models.
+        supports_image_api: Mount image generation and editing routes for this pipeline.
         requires_uploaded_voice_for_named_voice: Whether non-default TTS voice
             names must resolve to uploaded voices before reaching the model.
         supports_uploaded_voice_references: Whether uploaded voice names can be
@@ -322,6 +325,10 @@ def create_app(
     register_models(app)
     register_admin(app, resolved_key)
     register_chat_completions(app)
+    if supports_image_api:
+        register_images(app)
+    else:
+        pass
     register_voices(app)
     register_generate(app)
     register_speech(app)
