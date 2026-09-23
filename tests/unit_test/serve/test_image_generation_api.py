@@ -144,7 +144,6 @@ def test_http_rejects_nonfinite_cfg_without_dispatch(api, field, value):
         {"image_h": 31},
         {"image_w": 33},
         {"mode": "interleaved"},
-        {"mode": "thinking"},
         {"decode_mode": "unknown"},
     ],
 )
@@ -186,7 +185,7 @@ def test_image_config_and_modalities_reach_omni_request() -> None:
 def test_all_image_controls_preserve_explicit_values() -> None:
     messages = [{"role": "user", "content": "Draw a square"}]
     config = {
-        "mode": "normal",
+        "mode": "thinking",
         "decode_mode": "decoder-turbo",
         "decoder_steps": 1,
         "seed": 0,
