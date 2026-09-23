@@ -2151,10 +2151,18 @@ class Stage:
             return
         else:
             pass
-        with suppress(Exception):
+        try:
             self.scheduler.abort(request_id)
-        with suppress(Exception):
+        except Exception:
+            logger.exception(
+                f"Stage {self.name} failed to abort scheduler request {request_id}"
+            )
+        try:
             self.comm.cleanup(request_id)
+        except Exception:
+            logger.exception(
+                f"Stage {self.name} failed to clean communication state for request {request_id}"
+            )
         try:
             if not self.owns_external_io:
                 raise RuntimeError(f"Follower stage {self.name} failed: {error}")
