@@ -35,8 +35,12 @@ sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000
 
 ## Image Generation and Editing
 
-Send non-streaming requests with `modalities: ["image"]`. `dllm_steps` controls
-VQ token generation; `decoder_steps` controls diffusion sampling.
+Use `POST /v1/images/generations` for T2I and `POST /v1/images/edits` for
+editing. These routes use SGLang Diffusion's image request and response
+schemas while executing Omni's Thinker and selected image decoder backend.
+`dllm_steps` controls VQ token generation; `num_inference_steps` controls
+decoder diffusion sampling. `guidance_scale` sets Thinker CFG, not an
+additional CFG pass in the image decoder.
 
 ```python
 import base64
@@ -46,30 +50,45 @@ import requests
 
 request = {
     "model": "inclusionAI/LLaDA2.0-Uni",
-    "messages": [{"role": "user", "content": "A sailboat on a calm lake."}],
-    "modalities": ["image"],
-    "stream": False,
-    "image_generation": {
-        "mode": "normal",
-        "decode_mode": "decoder-turbo",
-        "decoder_steps": 8,
-        "dllm_steps": 8,
-        "cfg_scale": 4.0,
-        "seed": 42,
-    },
+    "prompt": "A sailboat on a calm lake.",
+    "size": "1024x1024",
+    "response_format": "b64_json",
+    "decode_mode": "decoder-turbo",
+    "num_inference_steps": 8,
+    "dllm_steps": 8,
+    "guidance_scale": 4.0,
+    "seed": 42,
 }
 response = requests.post(
-    "http://localhost:8000/v1/chat/completions", json=request, timeout=600
+    "http://localhost:8000/v1/images/generations", json=request, timeout=600
 )
 response.raise_for_status()
-image = response.json()["choices"][0]["message"]["image"]
-Path("generated.png").write_bytes(base64.b64decode(image["data"]))
+image = response.json()["data"][0]
+Path("generated.png").write_bytes(base64.b64decode(image["b64_json"]))
 ```
 
-For editing, use an instruction such as `"Change the background to a beach."`
-and include one source `image_url` content item alongside the text in the user
-message. Set `cfg_text_scale` and `cfg_image_scale` in `image_generation` to
-control editing guidance. Omitting those values retains task-specific defaults.
+Edits accept multipart form data with exactly one `image`/`image[]` upload or
+`url`/`url[]` reference. Dimensions follow the processed source grid; omit
+`size`, `width`, and `height`. Set `cfg_text_scale` and `cfg_image_scale` for
+editing guidance. Omitting them retains the model's task-specific defaults.
+
+```bash
+curl http://localhost:8000/v1/images/edits \
+  -F 'image=@source.png' \
+  -F 'prompt=Change the background to a beach.' \
+  -F 'response_format=b64_json' \
+  -F 'decode_mode=decoder-turbo' \
+  -F 'num_inference_steps=8' \
+  -F 'cfg_text_scale=4.0' -F 'cfg_image_scale=1.5' -F 'seed=42'
+```
+
+Both routes are non-streaming, support one PNG (`n=1`), and return
+`{id, created, data: [...]}`. `response_format=b64_json` returns raw base64;
+`response_format=url` returns an inline PNG data URL without server-side file
+retention. T2I accepts either `size` or paired `width`/`height`, defaulting to
+1024x1024. Unsupported native sampling controls are rejected rather than ignored.
+The old chat image-generation entrypoint remains available for existing clients.
+
 Only `mode: "normal"` is supported; thinking and interleaved generation are
 not part of this pipeline.
 
