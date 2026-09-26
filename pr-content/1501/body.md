@@ -1,54 +1,53 @@
 ## Motivation
 
-Distribute LLaDA2-Uni image decoding across GPUs using SGLang Diffusion's sequence-parallel runtime. Shard the transformer sequence while preserving the global image/conditioning order, so SP reduces backbone work without changing which tokens attend to one another.
+Distribute LLaDA2-Uni image decoding across GPUs with SGLang Diffusion sequence parallelism. Preserve global image/conditioning order while sharding transformer work, and provide the generic stage-SP lifecycle required by that integration.
 
 ## Modifications
 
-- Include generic stage SP topology, placement, process launch, rank metadata, and lifecycle support, then connect it to the LLaDA2-Uni image decoder.
-- Configure `sp_size`, `ulysses_degree`, and `ring_degree`, requiring `sp_size = ulysses_degree * ring_degree`. Multi-rank decoding requires `factory.backend="sglang"`; Diffusers remains available for SP1.
-- Reuse SGLang's Z-Image transformer, sharding/gathering utilities, attention, and distributed process groups. Ulysses and Ring use the existing SGLang attention implementations.
-- Keep SigVQ conditioning and VAE decoding on the leader. Synchronize the conditioning/seed and propagate preparation failures so followers participate in the same decoder collectives without emitting duplicate images.
-- Wrap the noise-refiner and joint transformer blocks in Omni. Partition their already padded sequences and matching position metadata, run the blocks on local shards, then gather in global sequence order.
-- Shard the joint image-plus-conditioning sequence rather than replicating its conditioning suffix on each rank. Preserve the canonical order through attention and gathering, including non-square padded layouts.
+- Include generic stage-SP topology, placement, process launch, rank metadata, and lifecycle support.
+- Add the LLaDA2-Uni decoder policy for `sp_size`, `ulysses_degree`, and `ring_degree`, requiring `sp_size = ulysses_degree * ring_degree`.
+- Use the SGLang Z-Image backend for multi-rank decoding. Diffusers remains the default for SP1.
+- Keep SigVQ conditioning and VAE decoding on the leader; synchronize request settings, conditioning, and seeds across ranks without emitting duplicate images.
+- Distinguish request failures synchronized across all ranks from unsynchronized TP/SP compute failures. Make the latter fatal to the scheduler so a failed worker cannot execute a later request and mismatch its collectives.
+- Propagate decoder preparation and worker failures through the stage/coordinator lifecycle; this is lifecycle hardening, not an NCCL fault-recovery protocol.
+- Shard padded noise-refiner and joint image-plus-conditioning sequences with matching position metadata, then gather in canonical global order, including non-square layouts.
 
-The token-order correction lives entirely in SGLang-Omni. This implementation does not require a source patch to the installed SGLang package or introduce a new attention kernel.
+The token-order handling stays in SGLang-Omni and reuses SGLang's attention and distributed primitives; it does not require editing the installed SGLang package.
 
-## Configuration and execution boundary
+Unsynchronized failures stop further work on the failed scheduler. Reporting to the coordinator can wait for distributed-backend timeout and cleanup; this does not provide automatic rank recovery or retract results already delivered by another rank.
 
-Set the decoder stage's `sp_size` and matching factory degrees. For two-rank Ulysses use `ulysses_degree=2, ring_degree=1`; for two-rank Ring use `ulysses_degree=1, ring_degree=2`. Ring requires a supported attention backend (`fa` or `sage_attn`); the configuration rejects unsupported combinations.
+## Usage and execution scope
 
-SP partitions transformer sequence tokens, not requests or independent images. Image and conditioning tokens need not each split exactly in half: the split follows the padded global sequence. Attention collectives provide access to the other ranks' token information.
+Set `image_decode.sp_size` and an equally sized list of distinct GPU IDs in `image_decode.gpu`; for example, SP2 can use `gpu=[1, 2]`. Put `backend`, `ulysses_degree`, `ring_degree`, and `attention_backend` under `image_decode.factory`. Multi-rank decoding requires `backend="sglang"`.
 
-The API, prompt construction, and thinker remain inherited. This is decoder SP, not thinker TP, CFG parallelism, or dynamic batching.
+- Two-rank Ulysses: `sp_size=2`, `ulysses_degree=2`, `ring_degree=1`.
+- Two-rank Ring: `sp_size=2`, `ulysses_degree=1`, `ring_degree=2`; Ring requires `attention_backend="fa"` or `"sage_attn"`.
 
-## Scope and dependencies
+Normal and `decoder-turbo` decoding reuse the inherited backend controls. SP partitions a transformer's sequence, not separate requests or independent images. The split follows the padded global image-plus-conditioning sequence; attention collectives provide cross-rank token information.
 
-The `llada2/decoder-sp` branch contains the implementation synchronized from `pipeline/stage-sp` and is stacked directly on #1502 (`llada2/interleaved-image-generation`). It inherits native and thinking image generation through that dependency. #1486 is a sibling thinker-TP branch, not a prerequisite.
+The image APIs, thinker, prompts, and response formats are inherited. This is decoder SP, not thinker TP, CFG parallelism, or dynamic batching.
 
-The generic stage SP work associated with #1490 is already included in this stack. Reconcile that overlap before merge rather than applying it twice. The comparison with `main` currently includes the earlier image-generation prerequisites.
+## Dependencies
 
-## Roadmap
+Depends directly on #1502, inheriting #1500, #1499, and #2257. #1486 is a sibling thinker-TP branch, not a prerequisite.
 
-This PR is re-submitted under the new [LLaDA-Uni roadmap (#2207)](https://github.com/sgl-project/sglang-omni/issues/2207), carrying forward the earlier work tracked in #445 with a rebased implementation and updated scope. It covers **Phase 2: LLaDA-Uni image decoder sequence parallelism**. It does not close the full roadmap.
+This PR contains the generic stage-SP work previously proposed in #1490. The older PR is superseded and is not an additional dependency; review both the generic runtime delta and the model-specific decoder integration here.
 
-## Accuracy Test
+## Related Issues
 
-- The latest synchronization passed the relevant unit suites; GPU-dependent skipped cases are not counted as GPU validation.
-- Recorded validation of the Omni-only token-order fix compared SP1 and Ulysses SP2 on six fixed-input cases, including historical interleaved frames and a padded 22x46 conditioning grid. All 312 compared tensors and all six output images matched exactly in that run.
-- Fixed T2I/edit decoder-input checks also produced identical SP1/Ulysses SP2 PNGs. These isolate decoder correctness; they do not prove end-to-end raw-image-edit quality.
+Tracked in #2207; continues the work in #445.
 
-These GPU results predate the latest input-preprocessing synchronization. Exact equality is limited to the tested environment, attention configuration, and inputs. No equivalent final-fix Ring parity or SP4 result is claimed here.
+## Validation
 
-## Benchmark & Profiling
+Regression-tested revision: `bed86273d1d186d7eb5679059570a597479e1c32`, based on `main` at `bddad43b` and #1502. The additional FlashAttention, fault-injection, and full-checkpoint results below were recorded on source tree `c1d4a2ee`, before the Qwen3-TTS-only upstream refresh; the relevant model, runtime, configuration, and dependency files are unchanged.
 
-Recorded Omni-only decoder measurements: H20-3e, BF16, Torch 2.13.0+cu130, FlashAttention, decoder-turbo with 8 steps, seed 42, and 1024x1024 output. Reuse fixed VQ inputs from serving, perform three warmup iterations, and report the median of seven measured decoder executions.
+- Related unit/regression suites: **1449 passed, 5 skipped**. Two engine-contract checks do not apply to configurations without an SGLang engine; three Ring cases require a different attention backend. Applicable formatting and static checks passed.
+- Small-checkpoint GPU comparisons exercised SP1 and Ulysses2 with `torch_sdpa`, plus SP1/Ulysses2/Ring2 with FlashAttention. All nine FlashAttention cases completed their original assertions: eight on the initial run, and one on an unchanged retry after a rendezvous-port collision. The tests compare against the Diffusers FP32 reference; Ulysses also checks exact equality with native SP1 for the tested inputs.
+- Four real production-entrypoint TP/SP fault scenarios passed with CUDA/NCCL and Gloo. Unknown compute failures prevented the queued successor from entering compute; errors agreed by all ranks allowed the successor to complete. Unknown-failure reporting waited for backend cleanup. The probe used a 15-second process-group timeout, not the decoder's 180-second default.
+- Full-checkpoint SP1 and Ulysses2 deployments passed **8 requests** covering normal/Turbo T2I, raw-image editing, and context-budget rejection. Normal/edit PNG pairs were byte-identical across these deployments. A separate Turbo check repeated the same request twice per deployment: each pair was byte-identical, but SP1 versus SP2 differed in RGB pixels (0–255 scale: MAE 1.626, RMSE 2.392, maximum absolute difference 29; PSNR 40.55 dB). This sample does not establish full-checkpoint numerical or perceptual equivalence.
+- Environment: Linux, NVIDIA H20-3e, SGLang 0.5.20, Diffusers 0.37.0, PyTorch 2.13.0+cu130, Transformers 5.12.1, and Triton 3.7.1. Full-checkpoint tests used the SGLang decoder with `torch_sdpa`, a separate TP1 eager thinker, seed 42, 16 dLLM steps and 5 decoder steps.
 
-| Fixed decoder input | SP1 | Ulysses SP2 | Speedup |
-| --- | ---: | ---: | ---: |
-| T2I | 7.503 s | 4.161 s | 1.80x |
-| Edit | 7.499 s | 4.163 s | 1.80x |
-
-These are decoder timings, not request E2E or steady-state serving throughput. They are prior validation of the decoder change, not a new benchmark of the latest rebased head. Final-head Ring performance and broader image-quality coverage remain to be reported.
+These are functional and bounded numerical checks, not a full-checkpoint quality or performance benchmark. Ring full-checkpoint inference, SP4, and general speedup remain unvalidated.
 
 ## Contributors
 

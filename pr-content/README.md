@@ -1,95 +1,72 @@
 # LLaDA2-Uni PR content collaboration
 
-This directory is the shared editing area for the titles and descriptions of
-seven existing pull requests in `sgl-project/sglang-omni`. It belongs only to
-the `llada2/PR-content` branch of `kunchengit/sglang-omni`.
+This directory contains editable titles and descriptions for the active
+LLaDA2-Uni contribution stack and roadmap. It belongs to the
+`llada2/PR-content` branch of `kunchengit/sglang-omni`; editing these files does
+not change GitHub automatically.
 
-The active roadmap is [LLaDA-Uni Model Support, Inference Optimization and Serving
-(#2207)](https://github.com/sgl-project/sglang-omni/issues/2207). The five refreshed
-descriptions identify these PRs as re-submissions under that roadmap, carrying
-forward the earlier work tracked in #445. Native image generation (#1499),
-thinking generation (#1500), and interleaved generation (#1502) belong to Phase 1;
-thinker TP (#1486) and decoder SP (#1501) belong to Phase 2. This records the
-roadmap relationship, not a claim that the implementations have merged.
+## Active pull requests
 
-## Pull requests
+| Item | Pull request | Title | Description | Immediate prerequisite |
+| --- | --- | --- | --- | --- |
+| A | [#2257](https://github.com/sgl-project/sglang-omni/pull/2257) | [title.txt](2257/title.txt) | [body.md](2257/body.md) | `main` |
+| B | [#1499](https://github.com/sgl-project/sglang-omni/pull/1499) | [title.txt](1499/title.txt) | [body.md](1499/body.md) | #2257 |
+| C | [#1500](https://github.com/sgl-project/sglang-omni/pull/1500) | [title.txt](1500/title.txt) | [body.md](1500/body.md) | #1499 |
+| E | [#1502](https://github.com/sgl-project/sglang-omni/pull/1502) | [title.txt](1502/title.txt) | [body.md](1502/body.md) | #1500 |
+| F | [#1486](https://github.com/sgl-project/sglang-omni/pull/1486) | [title.txt](1486/title.txt) | [body.md](1486/body.md) | #1502 |
+| H | [#1501](https://github.com/sgl-project/sglang-omni/pull/1501) | [title.txt](1501/title.txt) | [body.md](1501/body.md) | #1502 |
 
-| Pull request | Title | Description |
-| --- | --- | --- |
-| [#1486](https://github.com/sgl-project/sglang-omni/pull/1486) | [title.txt](1486/title.txt) | [body.md](1486/body.md) |
-| [#1487](https://github.com/sgl-project/sglang-omni/pull/1487) | [title.txt](1487/title.txt) | [body.md](1487/body.md) |
-| [#1490](https://github.com/sgl-project/sglang-omni/pull/1490) | [title.txt](1490/title.txt) | [body.md](1490/body.md) |
-| [#1499](https://github.com/sgl-project/sglang-omni/pull/1499) | [title.txt](1499/title.txt) | [body.md](1499/body.md) |
-| [#1500](https://github.com/sgl-project/sglang-omni/pull/1500) | [title.txt](1500/title.txt) | [body.md](1500/body.md) |
-| [#1501](https://github.com/sgl-project/sglang-omni/pull/1501) | [title.txt](1501/title.txt) | [body.md](1501/body.md) |
-| [#1502](https://github.com/sgl-project/sglang-omni/pull/1502) | [title.txt](1502/title.txt) | [body.md](1502/body.md) |
+The stack is **A → B → C → E → (F, H)**. E includes the shared relay lifecycle;
+H includes generic stage-SP support. F and H are sibling optimization branches.
+These are code dependencies, not a requirement to finish all optimizations
+before merging basic generation support.
+
+Roadmap [#2207](https://github.com/sgl-project/sglang-omni/issues/2207) has its own
+[title.txt](roadmap-2207/title.txt) and [body.md](roadmap-2207/body.md). It continues
+the work tracked in #445 and prioritizes core functionality before optimization.
+
+## Archived proposals
+
+The following files are retained unchanged as historical records, not active
+publication drafts or prerequisites:
+
+| Proposal | Superseded by | Archived title | Archived description |
+| --- | --- | --- | --- |
+| [#1487](https://github.com/sgl-project/sglang-omni/pull/1487), shared relay | E/#1502 | [title.txt](1487/title.txt) | [body.md](1487/body.md) |
+| [#1490](https://github.com/sgl-project/sglang-omni/pull/1490), generic stage SP | H/#1501 | [title.txt](1490/title.txt) | [body.md](1490/body.md) |
+
+This records their place in the contribution plan; it does not claim their
+GitHub open/closed state has been changed.
 
 ## Editing and publishing
 
-### Implementation mapping (2026-09-22)
+1. Edit the relevant `title.txt` and `body.md` here. Keep code changes on the
+   implementation branches.
+2. Review the wording against the actual code and immediate prerequisite.
+   Validation placeholders must be replaced with exact tested commits,
+   environments, results, and remaining limitations before publication.
+3. Before publishing, read the upstream PR or issue again and reconcile any
+   concurrent edits. Do not replace newer collaborator text without review.
+4. The PR/issue author or another user with the necessary upstream permission
+   publishes the approved text, then reads it back to verify it.
 
-The five descriptions below were refreshed against the published implementation
-branches, rather than the initial PR export. Titles remain unchanged.
+Title files contain only the title; body files contain only Markdown for the
+PR or issue. Contributors are preserved in each PR description. The native
+`data[]`, single-image chat `message.image`, and interleaved chat
+`message.segments` with plain-text `message.content` contracts must not be conflated.
 
-| PR | Implementation branch in `kunchengit/sglang-omni` | Reviewed head | Immediate base |
-| --- | --- | --- | --- |
-| #1499 | `llada2/native-image-generation` | `f2e6fbbdb4a5` | `llada2/thinker-fix` (`cf71f2fbbb02`) |
-| #1500 | `llada2/thinking-image-generation` | `5c4e5c615bf0` | #1499 |
-| #1502 | `llada2/interleaved-image-generation` | `11932284ec72` | #1500 |
-| #1486 | `llada2/thinker-tp` | `f520bba6c78d` | #1502 |
-| #1501 | `llada2/decoder-sp` | `b6d0a7d82231` | #1502 |
-
-The dependency chain is thinker correctness -> native image -> thinking image ->
-interleaved generation, followed by separate thinker-TP and decoder-SP branches.
-The interleaved branch includes shared relay work; the decoder-SP branch includes
-generic stage SP work. The older #1487/#1490 descriptions are left untouched, but
-their overlapping scope must be reconciled before publication/merge.
-
-The #1501 head branch, `llada2/decoder-sp`, has been synchronized with
-`pipeline/stage-sp` at `b6d0a7d82231`. Both branches now contain the same
-implementation, including the Omni-only sequence-order correction. The text
-stored here still needs to be published separately by the PR author.
-
-Validation sections distinguish historical GPU evidence from checks after the
-latest stack synchronization. Historical precomputed-token edit scores are not
-claims about the raw-image path; the public `.pt` input has been removed.
-
-### Publishing workflow
-
-1. Edit the relevant `title.txt` and/or `body.md` on this collaboration branch.
-   The title file contains only the PR title; the body file contains only the
-   Markdown description to publish.
-2. Commit the wording changes here for collaborator review. Keep code changes
-   on their existing PR branches.
-3. Before publishing, compare the files with the current upstream PR. If someone
-   has edited the PR on GitHub, reconcile those edits before replacing its text.
-4. The PR author or someone with the required upstream permissions publishes
-   the agreed title and description, then reads them back to verify the result.
-
-Editing these files does **not** automatically update GitHub. No PR-content
-publishing script or workflow is configured here, and no credentials or
-additional upstream permissions are included.
-
-Do not open an upstream PR for this collaboration branch or merge it into
-`main` or the feature branches. Only public, publication-ready PR content
-belongs here; do not add credentials or private development material.
+No publishing script, workflow, credentials, or additional GitHub permissions
+are configured by this branch. Do not open an upstream code PR for it or merge
+it into `main` or feature branches. Keep private development material out of
+this directory.
 
 ## Initial snapshot
 
-`snapshot.json` records the source URLs, source branch names, status, and capture
-time for the initial export. GitHub's `updated_at` is a general PR update time,
-not necessarily the time its title or description was last edited.
+`snapshot.json` is the unchanged metadata from the initial seven-PR export.
+Its timestamps, titles, branch names, and Draft states are historical, not
+current status. It is not rewritten when these working copies are edited.
 
-All seven PRs were open drafts when captured. These status fields are a snapshot,
-not a live status report.
-
-The initial title and description files preserve the GitHub text exactly,
-including line endings, blank lines, and whether a final newline is present.
-The scoped `.gitattributes` prevents Git from normalizing these files on checkout
-or staging. Do not automatically reformat the initial export. In particular,
-the repository's `end-of-file-fixer` hook would add a newline to descriptions
-that originally have none; `.gitattributes` does not prevent hook or editor edits.
-
-The title and description files are the editable working copies. The snapshot
-metadata describes their initial source and does not need to change for every
-wording edit.
+The original exports preserved line endings, blank lines, and final-newline
+presence. The scoped `.gitattributes` prevents Git normalization but does not
+prevent editors or formatting hooks from rewriting archived files. Keep the
+#1487/#1490 title and body files byte-for-byte unchanged.

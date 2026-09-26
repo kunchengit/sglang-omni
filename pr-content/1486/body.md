@@ -1,65 +1,49 @@
 ## Motivation
 
-Enable tensor-parallel LLaDA2-Uni thinker execution for understanding and image generation. This also addresses two sources of overhead in the replayed implementation: per-process GPU visibility prevented custom all-reduce initialization, and the model duplicated expert routing already provided by SGLang.
+Enable tensor-parallel LLaDA2-Uni thinker execution for understanding and image generation while preserving its MoE numerical behavior. Add opt-in CFG-aware CUDA graph execution to reduce eligible repeated-forward launch overhead.
 
 ## Modifications
 
-- Propagate stage TP rank, size, GPU placement, and rendezvous settings into the thinker worker; fan out dLLM work to participating ranks.
-- Retain rank-local shared and routed expert outputs, combine them in FP32, perform one TP all-reduce, and cast back to the model dtype.
-- Reuse SGLang's `TopK` routing component while preserving the checkpoint's sigmoid scores, correction bias, normalization, and routing scale. No new Triton kernel is introduced.
-- Keep the stage's GPU set visible to each LLaDA2-Uni rank so SGLang can initialize custom all-reduce; preserve correct rank-to-device mapping.
-- Enable CFG-aware CUDA Graph execution through an Omni model-runner hook selected for `LowConfidenceCFG`, without replacing the graph runner for unrelated models.
-- Use CPU padding metadata to decide graph eligibility. A dLLM block with padding inside its active query runs eagerly; eligible blocks can replay once padding is entirely in the cached prefix, with padded cached positions excluded from attention.
-- Preserve `server_args_overrides={"disable_cuda_graph": True}` and fix inherited interleaved stage configuration so its decoder remains nonterminal.
+- Propagate stage TP rank, size, GPU placement, and rendezvous settings into thinker workers and fan out dLLM work to participating ranks.
+- Combine rank-local shared and routed expert outputs in FP32, perform one TP all-reduce, and cast back to the output dtype.
+- Reuse SGLang's `TopK` routing while preserving sigmoid scores, expert correction bias, normalization, and routing scale.
+- Keep the participating GPU set visible to each thinker rank so SGLang can initialize custom all-reduce with the correct rank-to-device mapping.
+- Select the CFG-aware model-runner hook for `LowConfidenceCFG` without replacing the graph path for unrelated models.
+- Use CPU padding metadata to decide graph eligibility: active-query padding runs eagerly; eligible blocks can replay after padding is entirely in the cached prefix.
+- Include optional H20 TP2 MoE configurations for existing SGLang kernels. These are parameter configurations, not new kernel implementations.
 
-CUDA Graph support is part of this TP execution change. It does not imply that every prefill or every dLLM forward uses a graph, and it is not a separate planned PR.
+## Usage and execution scope
 
-## Scope and dependencies
+The thinker remains eager by default. With SGLang 0.5.20, use `--thinker.engine.cuda_graph_backend_decode full` to opt into full decode graphs; prefill remains eager. Use `--thinker.engine.cuda_graph_backend_decode disabled` to explicitly select eager decode. Phase-specific or JSON graph settings take precedence over the compatibility `disable_cuda_graph` flag.
 
-The current branch is stacked on #1502 (`llada2/interleaved-image-generation`). Its comparison against `main` therefore includes the thinker correctness, native image, thinking, and interleaved prerequisites. Review the TP change relative to that branch; rebase after those prerequisites land.
+TP configuration supplies the stage's rank count and GPU list and requires a dedicated thinker process. For example, a two-rank deployment uses `--thinker.process thinker --thinker.tp_size 2 --thinker.gpu '[0, 1]'`. Enabling graphs does not guarantee that every prefill or dLLM block is replayable; ineligible padded layouts still use eager execution.
 
-This PR changes thinker execution only. Decoder SP is tracked in #1501 and is a sibling branch, not a dependency. Expert parallelism, quantization, and request batching are out of scope.
+Optional tuning is enabled separately with `SGLANG_MOE_CONFIG_DIR` set to the absolute path of `examples/tuning/llada2_uni/h20_tp2`, not its `configs/` subdirectory. SGLang appends the versioned configuration subdirectory. The supplied configurations target BF16 LLaDA2.0-Uni on H20-3e, TP2, SGLang 0.5.20, and Triton 3.7.1. They replace the MoE configuration search root, so omit the setting for other models, TP sizes, precision modes, or hardware/software combinations without their own validation.
 
-## Roadmap
+## Dependencies
 
-This PR is re-submitted under the new [LLaDA-Uni roadmap (#2207)](https://github.com/sgl-project/sglang-omni/issues/2207), carrying forward the earlier work tracked in #445 with a rebased implementation and updated scope. It covers **Phase 2: LLaDA-Uni thinker tensor parallelism**, including the associated CFG CUDA Graph execution changes described above. It does not close the full roadmap.
+Depends directly on #1502, inheriting the thinker correctness and image-generation feature stack. Review the incremental TP, routing, and graph changes relative to that PR.
 
-## Accuracy Test
+#1501 is a sibling decoder-SP branch, not a dependency. The shared TP plumbing can support other model stages, but LLaDA2-Uni's reduction order and CFG attention semantics require model-specific validation. Expert parallelism, quantization, and request batching are outside this PR.
 
-The latest stack synchronization passed the relevant LLaDA2-Uni and image API unit checks. Recorded GPU validation of the routing/custom-all-reduce changes also covered TP2 serving and cross-rank output-token agreement.
+## Related Issues
 
-The paired routing study used the same TP2 setup for both arms, changing the router implementation:
+Tracked in #2207; continues the work in #445.
 
-| Evaluation subset | Before routing replacement | SGLang TopK |
-| --- | ---: | ---: |
-| MMMU, 60 samples, VLMEvalKit API judge | 53.33% | 51.67% |
-| ImgEdit, 216 samples, official judge | 3.5370 | 3.5748 |
-| GenEval, 60 samples | 86.67% | 86.67% |
+## Validation
 
-These are historical subset results, not full-benchmark scores or proof of noninferiority. The ImgEdit study used precomputed source tokens through the former evaluation path; that public input has since been removed. It does not validate the current raw-image preprocessing path. The benchmark was not rerun after the latest preprocessing/branch synchronization.
+Regression-tested revision: `3f788395f9c97aae2280aa026dd58f1611933134`, based on `main` at `bddad43b` and #1502. Full-checkpoint results below were recorded on `e47537ef`, before the Qwen3-TTS-only upstream refresh; the relevant model, runtime, configuration, and dependency files are unchanged.
 
-TP1 and TP2 are not required to produce identical pixels: routing order and floating-point reduction order can change. Quality comparisons remain necessary.
+- Related unit/regression suites: **1379 passed, 2 skipped**. The skips are engine-contract checks in configurations without an SGLang engine. Applicable formatting and static checks passed.
+- Full-checkpoint matrix on H20-3e: TP1 and TP2, each with eager execution and explicit decode graphs. All **12 requests** passed: two-way CFG T2I, three-way CFG raw-image editing, and a long-prompt T2I case per deployment. Requests used seed 42, 16 dLLM steps and 5 decoder steps, with the Diffusers decoder on a separate GPU.
+- Both graph deployments produced real CUDA graph capture/replay evidence, including both TP2 ranks. Active-query padding rejected graph execution; replay resumed once the padding was entirely in the cached prefix. Requests completed without leftover pending work.
+- Within each TP size, all three eager/graph PNG pairs were byte-identical. PNGs differed between TP1 and TP2; cross-TP numerical and perceptual equivalence has not been quantified.
+- Environment: Linux, NVIDIA H20-3e, SGLang 0.5.20, Diffusers 0.37.0, PyTorch 2.13.0+cu130, Transformers 5.12.1, and Triton 3.7.1.
 
-## Benchmark & Profiling
-
-Recorded before the latest stack synchronization: H20-3e, BF16, Torch 2.13.0+cu130, SGLang 0.5.19, CUDA Graph enabled, 32-token dLLM blocks, 32 thinker steps, text CFG 4, seed 42, and 1024x1024 output. The SGLang decoder remained SP1 with 8 turbo steps; edit additionally used image CFG 1.5.
-
-Each row is the median of five unprofiled HTTP requests after three warmup requests, using SGLang TopK in both TP configurations.
-
-| Task | TP1 thinker | TP2 thinker | TP1 request E2E | TP2 request E2E |
-| --- | ---: | ---: | ---: | ---: |
-| T2I | 6.550 s | 5.674 s | 15.521 s | 14.666 s |
-| Edit | 3.863 s | 3.487 s | 12.868 s | 12.495 s |
-
-Thinker time includes stage/scheduler overhead. TP2 reduced it by 13.4% for T2I and 9.7% for edit in this workload; a short prefill did not benefit. A separate attribution trace confirmed custom all-reduce instead of NCCL and reduced routing-kernel overhead. These measurements are not a fresh benchmark of the current branch head.
+The matrix did not enable the optional MoE tuning overrides. These are functional and sample-consistency checks, not quality or performance benchmarks. No general speedup, TP4 result, or expert-parallel validation is claimed.
 
 ## Contributors
 
 - @kunchengit
 - @btw616
 - @LiRongchuan
-
-## Remaining validation
-
-- Rerun GPU accuracy and warm performance on the final rebased head before making current-head performance claims.
-- TP4 and broader workload coverage are not claimed here.

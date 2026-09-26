@@ -1,19 +1,19 @@
 ## Motivation
 
-Add thinking-mode T2I on top of native image generation: the thinker first generates text up to the image-begin token, then generates the image-token grid and sends it to the existing decoder.
+Add thinking-mode text-to-image generation on top of #1499. The thinker first produces text and an image-begin boundary, then generates the image-token grid in a second pass before image decoding.
 
 ## Modifications
 
-- Extend `image_generation.mode` with `thinking` for text-to-image requests; image editing remains normal mode only.
-- Run the first phase with a 2048-token thinking budget and `<boi>` as a stop token, without image-vocabulary constraints or image CFG.
-- Build the second-phase prompt from the original prompt and generated tokens through the first `<boi>`. Preserve that generated prefix and construct the image CFG branches at the transition.
-- Validate the transition and context budget before updating request state; treat a missing image-begin boundary as a request error.
-- Re-enter the thinker through the existing stage routing, generate the image-token grid, and use the decoder from #1499.
-- Retain the generated thinking text for the text response when text output is requested.
+- Accept `image_generation.mode="thinking"` for T2I; thinking-mode editing is unsupported.
+- Run the first pass with a fixed 2048-token budget and `<boi>` as a stop token, without image-vocabulary constraints or CFG.
+- Build the second-pass prompt from the original input and generated tokens through the first `<boi>`; validate the context budget and CFG inputs before committing the transition.
+- Re-enter the thinker to generate the requested image-token grid, then use the decoder inherited from #1499.
+- Retain the generated thinking text for text output and account for both generation passes as completion tokens, without reclassifying the thinking prefix as user input.
+- Extend phase-transition, CFG, routing, state-transfer, usage, and non-thinking regression coverage.
 
-## Public API contract
+## Usage
 
-Use the existing non-streaming `/v1/chat/completions` image-generation API:
+For a non-streaming chat response containing both the thinking text and PNG:
 
 ```json
 {
@@ -22,35 +22,39 @@ Use the existing non-streaming `/v1/chat/completions` image-generation API:
   "stream": false,
   "image_generation": {
     "mode": "thinking",
+    "image_h": 1024,
+    "image_w": 1024,
     "cfg_scale": 4.0,
     "seed": 42
   }
 }
 ```
 
-The PNG is returned in `choices[0].message.image` with `data` and `format`, as in #1499. With both text and image modalities, `message.content` contains the first-phase generated text. Image-only requests do not request that text output.
+The response retains #1499's single-image shape: `choices[0].message.content` contains the thinking text when text output is requested, and `message.image` contains the PNG's `data` and `format`. Image-only requests omit the text output.
 
-The first-phase 2048-token budget is not a separate public control. Image dimensions, guidance, decoder mode, decoder steps, and seed reuse #1499's controls. This PR does not add thinking-mode edit, multi-frame interleaving, or streaming HTTP responses.
+The native `POST /v1/images/generations` entry point inherited from #1499 also accepts `mode: "thinking"`. Its controls are top-level, dimensions use `size` or `width`/`height`, and its response remains `data[]`; it does not return the thinking trace.
+
+The 2048-token first-pass budget is not a separate public control. The generated image header is preserved in the conditional prefix, while the requested grid determines the image-token budget, unconditional header, and decoder dimensions, matching the reference thinking flow. Decoder backend and `normal`/`decoder-turbo` controls are inherited from #1499.
 
 ## Scope and dependencies
 
-Stacked directly on #1499 (`llada2/native-image-generation`). Review the delta from that branch; image preprocessing, decoder loading, CFG scheduling, and the single-image response are inherited.
+Depends directly on #1499 and transitively on #2257. Review the thinking-mode delta relative to #1499.
 
-This change is model-specific phase construction and routing. The shared multi-inflight relay implementation is included with #1502, not introduced here. Thinker TP and image-decoder SP remain separate follow-ups.
+This PR adds model-specific two-pass construction and routing, not streaming HTTP responses or multi-frame output. The shared asynchronous relay and interleaved collector are included in #1502. Thinker TP and decoder SP are separate optimization branches.
 
-## Roadmap
+## Related Issues
 
-This PR is re-submitted under the new [LLaDA-Uni roadmap (#2207)](https://github.com/sgl-project/sglang-omni/issues/2207), carrying forward the earlier work tracked in #445 with a rebased implementation and updated scope. It covers **Phase 1: thinking-mode image generation**. It does not close the full roadmap.
+Tracked in #2207; continues the work in #445.
 
-## Accuracy Test
+## Validation
 
-The LLaDA2-Uni and image API unit suites passed after rebasing onto the updated native-image branch, covering phase transitions, missing-`<boi>` failures, CFG construction, and normal/thinking request separation.
+Tested revision: `86b7caec49baee8ec195ca06cc0c71d7cd2fc40e`, based on `main` at `bddad43b` and #1499.
 
-Earlier real-checkpoint tests exercised both ordinary T2I and thinking T2I during the branch split. Those are historical smoke results, not fresh GPU validation of this head after the latest input-preprocessing synchronization. No full image-quality benchmark or token-exact parity claim is made.
+- Image API, LLaDA2-Uni, and dLLM scheduler suites: **143 passed, 0 skipped**, including the inherited small-checkpoint GPU decoder comparison.
+- Coverage includes the first-BOI boundary, missing-boundary errors, CFG enabled/disabled, state round trips, original prompt versus two-pass completion accounting, and normal-mode regression tests.
+- Environment: Linux, NVIDIA H20-3e, SGLang 0.5.20, Diffusers 0.37.0, PyTorch 2.13.0+cu130, Transformers 5.12.1, and Triton 3.7.1. Applicable formatting and static checks passed.
 
-## Benchmark & Profiling
-
-No current-head performance claim. Thinking latency includes an additional generation phase and should not be compared to normal T2I without reporting both phase times.
+Reference-control-flow checks and small-checkpoint tests do not establish full-model image-quality parity. No performance improvement is claimed here.
 
 ## Contributors
 

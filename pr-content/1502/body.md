@@ -1,20 +1,18 @@
 ## Motivation
 
-Allow one LLaDA2-Uni request to alternate text and multiple generated images. Completed image-token spans can be sent to the decoder while the thinker continues, and the final response preserves their order.
+Allow one LLaDA2-Uni request to alternate text and multiple generated images. Each completed image-token span can be decoded while the thinker continues, and the final response preserves segment order.
 
 ## Modifications
 
-- Add the interleaved text/image state machine, generated image-header handling, VQ-span extraction, frame limits, and request context budgets.
-- Preserve the original system prompt, accumulated generation history, and phase-specific budgets/CFG across thinker re-entry.
-- Dispatch a separate frame payload when an image span completes, then continue the thinker without waiting for that frame's decoder result.
-- Include shared self-route and multi-inflight stage lifecycle support. The interleaved decoder is nonterminal; frame results and thinker completion meet in a collector keyed by request and frame identity.
-- Isolate collector state across request completion, abort, and request-ID reuse, and wait for outstanding frames before finalizing a successful response.
-- Add ordered text/image-reference content and stable frame IDs, with image bytes stored once per frame.
-- Provide `examples/configs/llada2_uni_interleaved.yaml` and matching client handling.
+- Add the text/image state machine with generated image-header parsing, exact VQ-span extraction, frame limits, and context budgets.
+- Preserve accumulated history and phase-specific CFG/budgets across thinker re-entry.
+- Dispatch isolated frame payloads to a nonterminal decoder and collect results by request and frame identity before final completion.
+- Include the shared self-route and multi-inflight stage lifecycle needed for that flow, including cancellation and late-preparation cleanup.
+- Expose ordered text/image `segments` with inline PNG media, a concatenated text view, matching client handling, and `examples/configs/llada2_uni_interleaved.yaml`.
 
-## Public API contract
+## Usage
 
-Use `/v1/chat/completions` on a deployment using the interleaved pipeline configuration:
+Use `POST /v1/chat/completions` on a deployment configured with the interleaved pipeline:
 
 ```json
 {
@@ -30,54 +28,64 @@ Use `/v1/chat/completions` on a deployment using the interleaved pipeline config
 }
 ```
 
-This path accepts text-only input and PNG output. If `modalities` is supplied, it must request both text and image. Source images, client-specified output dimensions, unknown interleaved controls, and `stream: true` are rejected. Image dimensions come from the generated image headers.
+This path accepts text-only input and PNG output. If `modalities` is supplied, it must contain both text and image. Source images, client-specified dimensions, unknown interleaved controls, and streaming are rejected. Frame dimensions come from generated image headers, which determine the required VQ-token count and CFG header. A completed frame must contain that exact VQ span followed by EOI; `image_max_new_tokens` remains an independent sampling upper bound, also limited by the available context.
 
-Supported controls are `max_frames`, `text_max_new_tokens`, `image_max_new_tokens`, `max_image_tokens`, `dllm_steps`, `cfg_scale`, `cfg_text_scale`, `cfg_image_scale`, `cfg_rescale`, `decoder_steps`, `seed`, `format`, and `decode_mode`. Decoder mode may be `normal` or `decoder-turbo`. `max_frames` defaults to 10 and has no fixed 64-frame ceiling; token/context budgets still apply.
+Supported controls are `max_frames`, `text_max_new_tokens`, `image_max_new_tokens`, `max_image_tokens`, `dllm_steps`, `cfg_scale`, `cfg_text_scale`, `cfg_image_scale`, `cfg_rescale`, `decoder_steps`, `seed`, `format`, and `decode_mode`. Decoder mode may be `normal` or `decoder-turbo`; `format` is `png`. `max_frames` defaults to 10; token/context limits apply independently.
 
-The response uses `choices[0].message.content[]` for ordered segments and `choices[0].message.images[]` for PNG payloads:
+The response exposes ordered `choices[0].message.segments`; `message.content` is the concatenated plain-text view. For example, a message containing text followed by an image has this shape:
 
 ```json
 {
-  "content": [
-    {"type": "text", "text": "First scene"},
-    {"type": "image_ref", "image_id": "image-request-0"},
-    {"type": "text", "text": "Then the story continues"}
-  ],
-  "images": [
+  "content": "First scene",
+  "segments": [
     {
-      "id": "image-request-0",
-      "data": "<base64 PNG>",
-      "format": "png",
-      "width": 1024,
-      "height": 1024
+      "type": "segment",
+      "session_id": "request-1",
+      "segment_index": 0,
+      "kind": "text",
+      "data": "First scene"
+    },
+    {
+      "type": "segment",
+      "session_id": "request-1",
+      "segment_index": 1,
+      "kind": "image",
+      "data": {
+        "kind": "image",
+        "mime_type": "image/png",
+        "url": "data:image/png;base64,<PNG_BASE64>",
+        "sha256": "<SHA256_OF_PNG_BYTES>",
+        "size_bytes": 12345
+      }
     }
   ]
 }
 ```
 
-Every image reference maps to one image in the same order. Existing single-image normal/thinking/edit responses retain their `message.image` field. This is an Omni extension to chat completions, not a new endpoint or an external SSE image-streaming protocol. Internal asynchronous relay does not imply cross-request dynamic batching.
+Segment indices are contiguous from zero and share one request-execution `session_id`. Image data includes a PNG data URL, the decoded bytes' SHA-256 digest, and their byte length; the example uses placeholder media values. The separate standard omni pipeline retains `message.image` for single-image chat and `data[]` for native image endpoints. The interleaved deployment exposes this chat-completions extension, not native image endpoints or an external SSE stream.
 
 ## Scope and dependencies
 
-Stacked on #1500 (`llada2/thinking-image-generation`), inheriting #1499 and the thinker correctness prerequisite.
+Depends directly on #1500, inheriting #1499 and #2257. This PR includes the shared relay work previously proposed in #1487; the older PR is superseded and is not an additional dependency.
 
-The current branch includes the shared relay/lifecycle work formerly separated as #1487. It must not be described as requiring a second copy of that code to land first. Reconcile the overlapping #1487 scope before merge; review both the model state machine and the shared runtime delta here.
+The relay/lifecycle changes are model-neutral infrastructure motivated by LLaDA2-Uni. Header interpretation, CFG construction, and the generation state machine remain model-specific. Asynchronous thinker/decoder overlap does not implement cross-request dynamic or continuous batching.
 
-Thinker TP (#1486) and decoder SP (#1501) are independent follow-ups based on this branch.
+#1486 and #1501 are sibling optimization branches based on this PR, not prerequisites for the basic interleaved feature.
 
-## Roadmap
+## Related Issues
 
-This PR is re-submitted under the new [LLaDA-Uni roadmap (#2207)](https://github.com/sgl-project/sglang-omni/issues/2207), carrying forward the earlier work tracked in #445 with a rebased implementation and updated scope. It covers **Phase 1: LLaDA-Uni interleaved generation**, including the internal relay needed by that pipeline. It does not claim the Phase 3 batching/scheduling work or close the full roadmap.
+Tracked in #2207; continues the work in #445.
 
-## Accuracy Test
+## Validation
 
-The latest stack synchronization passed LLaDA2-Uni and image API unit checks covering request/response contracts, phase transitions, frame collection, and lifecycle behavior.
+Regression-tested revision: `c79e7370396a2a11077c0ec773d432131d316652`, based on `main` at `bddad43b` and #1500. The final default-step protocol smoke ran on `b4dbf357`; the reduced-step comparison was recorded on `74e81bb0`. The relevant model, runtime, configuration, and dependency files are unchanged across the intervening upstream-only refreshes.
 
-Earlier GPU runs exercised multi-frame generation and inspected the returned images. They do not establish exact agreement with an HF baseline or a fresh quality result for the latest head. Final-head multi-frame quality and abort/concurrent-request serving should be rechecked before merge.
+- Related unit/regression suites: **1357 passed, 2 skipped**. The skips are engine-contract checks in configurations without an SGLang engine. Coverage includes self-routing, concurrent frame collection, cancellation, late-preparation cleanup, session admission, and image/API boundaries. Applicable formatting and static checks passed.
+- A full-checkpoint request at the default 32 dLLM steps returned exactly two 1024×1024 PNG frames. The check verified contiguous segment indices, a shared session ID, segment/media types, PNG hashes and byte lengths, concatenated text, and token accounting. Requests completed without leftover pending work.
+- The same sample at 16 dLLM steps failed strict frame validation because the image phase exhausted its sampling budget without EOI. Restoring the default 32 steps produced the required VQ span and EOI in each frame. Frame validation was not relaxed; lower-step output robustness is not established.
+- Environment: Linux, NVIDIA H20-3e, SGLang 0.5.20, Diffusers 0.37.0, PyTorch 2.13.0+cu130, Transformers 5.12.1, and Triton 3.7.1. The multi-frame smoke used the default Diffusers decoder, seed 42 and 5 decoder steps.
 
-## Benchmark & Profiling
-
-No current-head latency or throughput claim. Internal relay permits thinker/decoder overlap but does not guarantee a speedup on every GPU placement.
+These are lifecycle, protocol, and representative generation checks, not a multi-frame quality or performance benchmark. No throughput or latency improvement is claimed here.
 
 ## Contributors
 
