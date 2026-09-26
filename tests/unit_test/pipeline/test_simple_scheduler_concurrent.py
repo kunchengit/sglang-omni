@@ -84,6 +84,77 @@ def test_abort_suppresses_all_queued_work_and_cleans_up_once() -> None:
     assert cleanups == ["req-abort"]
 
 
+@pytest.mark.parametrize("mode", ["serial", "concurrent", "batch"])
+@pytest.mark.parametrize("compute_raises", [False, True])
+def test_abort_cleans_resources_created_by_inflight_work(
+    mode: str, compute_raises: bool
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    cleaned = threading.Event()
+    resources: dict[str, str] = {}
+    computed: list[str] = []
+
+    def compute(request_id: str) -> str:
+        computed.append(request_id)
+        started.set()
+        assert release.wait(timeout=2.0)
+        resources[request_id] = "prepared"
+        if compute_raises:
+            raise ValueError("Preparation failed after allocating resources")
+        else:
+            return request_id
+
+    def compute_batch(request_ids: list[str]) -> list[str]:
+        return [compute(request_id) for request_id in request_ids]
+
+    def cleanup(request_id: str) -> None:
+        if resources.pop(request_id, None) is not None:
+            cleaned.set()
+        else:
+            pass
+
+    scheduler = SimpleScheduler(
+        compute,
+        batch_compute_fn=compute_batch if mode == "batch" else None,
+        max_batch_size=2 if mode == "batch" else 1,
+        max_concurrency=2 if mode == "concurrent" else 1,
+        allow_multiple_inflight_per_request=True,
+        abort_callback=cleanup,
+    )
+    scheduler.inbox.put(IncomingMessage("cancelled", "new_request", "cancelled"))
+    if mode == "batch":
+        scheduler.inbox.put(IncomingMessage("cancelled", "new_request", "cancelled"))
+    else:
+        pass
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        assert started.wait(timeout=2.0)
+        scheduler.abort("cancelled")
+        assert resources == {}
+        release.set()
+        assert cleaned.wait(
+            timeout=2.0
+        ), "Resources created after abort were not released"
+    finally:
+        release.set()
+        scheduler.stop()
+        worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert resources == {}
+    assert scheduler.outbox.empty()
+    previous_computations = list(computed)
+    loop = asyncio.new_event_loop()
+    try:
+        scheduler.run_single(IncomingMessage("cancelled", "new_request", "late"), loop)
+    finally:
+        loop.close()
+    assert computed == previous_computations
+    assert scheduler.outbox.empty()
+
+
 def test_batch_compute_excludes_aborted_work() -> None:
     computed: list[str] = []
 
