@@ -21,6 +21,10 @@ class SchedulerStatus(Enum):
     ABORTED = auto()
 
 
+class SynchronizedRequestError(RuntimeError):
+    """All ranks agreed to fail a request at a completed synchronization boundary."""
+
+
 @dataclass(frozen=True)
 class ParallelSchedulerCapabilities:
     """Ownership of parallel work delivery and cancellation.

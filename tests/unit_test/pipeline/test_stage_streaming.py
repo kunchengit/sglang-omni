@@ -30,6 +30,7 @@ from sglang_omni.proto import (
 from sglang_omni.relay.shm import ShmRelay
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.types import SynchronizedRequestError
 from tests.unit_test.fixtures.pipeline_fakes import FakeRelay as RecordingRelay
 from tests.unit_test.fixtures.pipeline_fakes import (
     FakeScheduler,
@@ -1272,7 +1273,17 @@ async def test_multi_inflight_failure_discards_remaining_work(
     await stage.send_failure("req", "duplicate failure")
     await stage.receive_local_payload("req", "producer", payload)
     for kind in ("admitted", "result", "error"):
-        scheduler.outbox.put(OutgoingMessage(request_id="req", type=kind, data=payload))
+        scheduler.outbox.put(
+            OutgoingMessage(
+                request_id="req",
+                type=kind,
+                data=(
+                    SynchronizedRequestError("all ranks failed")
+                    if kind == "error"
+                    else payload
+                ),
+            )
+        )
     await stage.drain_outbox()
     assert scheduler.inbox.empty()
     assert cleanups == relay.cleaned == ["req"]
