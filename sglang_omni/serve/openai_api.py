@@ -80,7 +80,6 @@ from sglang_omni.proto.admin import AdminResponse
 from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
-from sglang_omni.serve.images import register_images
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
     DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -326,6 +325,8 @@ def create_app(
     register_admin(app, resolved_key)
     register_chat_completions(app)
     if supports_image_api:
+        from sglang_omni.serve.images import register_images
+
         register_images(app)
     else:
         pass

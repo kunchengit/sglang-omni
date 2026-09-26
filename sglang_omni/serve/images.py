@@ -2,6 +2,7 @@
 """Native image API envelopes for Omni image-generation pipelines."""
 
 import base64
+import logging
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
@@ -14,13 +15,11 @@ from sglang.multimodal_gen.runtime.entrypoints.openai.protocol import (
 from starlette.datastructures import UploadFile
 
 from sglang_omni.client.client import Client
-from sglang_omni.client.types import (
-    ClientError,
-    GenerateRequest,
-    Message,
-    SamplingParams,
-)
+from sglang_omni.client.types import GenerateRequest, Message, SamplingParams
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.serve.protocol import ImageGenerationParams
+
+logger = logging.getLogger(__name__)
 
 
 def build_image_request(
@@ -145,8 +144,12 @@ def register_images(app: FastAPI) -> None:
         client: Client = app.state.client
         try:
             result = await client.completion(generation, request_id=request_id)
-        except ClientError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except Exception as exc:
+            if is_bad_request_error(exc):
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            else:
+                logger.exception(f"Error generating image for request {request_id}")
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
         if result.image is None:
             raise HTTPException(status_code=500, detail="Pipeline returned no image")
         else:
