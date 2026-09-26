@@ -101,14 +101,12 @@ class SimpleScheduler:
             return request_id in self.aborted
 
     def consume_if_aborted(self, request_id: str) -> bool:
-        with self.abort_lock:
-            if request_id not in self.aborted:
-                return False
-            else:
-                pass
-            self.aborted.discard(request_id)
-        self.cleanup_aborted_request(request_id)
-        return True
+        """Skip aborted work at admission while retaining its cancellation marker.
+
+        Subclasses may retire skipped operations or admit required cleanup work.
+        The marker remains set so later work for the same request is suppressed.
+        """
+        return self.is_aborted(request_id)
 
     def enqueue(self, message: IncomingMessage) -> None:
         """Runs on the stage event loop, so the arrival hook must not block."""
@@ -211,7 +209,7 @@ class SimpleScheduler:
         )
 
     def run_single(self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop) -> None:
-        if self.is_aborted(msg.request_id):
+        if self.consume_if_aborted(msg.request_id):
             return
         else:
             pass
@@ -243,7 +241,9 @@ class SimpleScheduler:
         batch: list[IncomingMessage],
         loop: asyncio.AbstractEventLoop,
     ) -> None:
-        active_batch = [msg for msg in batch if not self.is_aborted(msg.request_id)]
+        active_batch = [
+            msg for msg in batch if not self.consume_if_aborted(msg.request_id)
+        ]
         if not active_batch:
             return
         else:
@@ -313,7 +313,7 @@ class SimpleScheduler:
                     pass
 
                 if msg.type == "new_request":
-                    if self.is_aborted(msg.request_id):
+                    if self.consume_if_aborted(msg.request_id):
                         continue
                     else:
                         pass
@@ -370,7 +370,7 @@ class SimpleScheduler:
                     continue
                 else:
                     pass
-                if self.is_aborted(msg.request_id):
+                if self.consume_if_aborted(msg.request_id):
                     continue
                 else:
                     pass

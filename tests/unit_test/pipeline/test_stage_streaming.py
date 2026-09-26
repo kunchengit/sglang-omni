@@ -30,8 +30,8 @@ from sglang_omni.proto import (
 from sglang_omni.relay.shm import ShmRelay
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from tests.unit_test.fixtures.pipeline_fakes import FakeRelay as RecordingRelay
 from tests.unit_test.fixtures.pipeline_fakes import (
-    FakeRelay,
     FakeScheduler,
     RecordingStageControlPlane,
     make_stage_payload,
@@ -1242,7 +1242,7 @@ async def test_multi_inflight_failure_discards_remaining_work(
         allow_multiple_inflight_per_request=True,
         abort_callback=cleanups.append,
     )
-    relay = FakeRelay()
+    relay = RecordingRelay()
     control = RecordingStageControlPlane()
     stage = make_stage(
         role=role,
