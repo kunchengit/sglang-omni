@@ -73,7 +73,6 @@ from sglang_omni.proto import EXPLICIT_STAGE_SAMPLING_PARAMS_KEY
 from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
-from sglang_omni.serve.images import register_images
 from sglang_omni.serve.openai_errors import (
     is_bad_request_error as _is_bad_request_error,
 )
@@ -316,6 +315,8 @@ def create_app(
     register_admin(app, resolved_key)
     register_chat_completions(app)
     if supports_image_api:
+        from sglang_omni.serve.images import register_images
+
         register_images(app)
     else:
         pass

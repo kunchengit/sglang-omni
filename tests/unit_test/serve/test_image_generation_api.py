@@ -3,11 +3,16 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client
+from sglang_omni.client.types import ClientError
 from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import build_chat_generate_request
@@ -43,6 +48,40 @@ def api():
     )
     with TestClient(app) as client:
         yield client, coordinator
+
+
+def test_non_image_app_does_not_import_diffusion() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import importlib.abc
+import sys
+
+class NoDiffusion(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "sglang.multimodal_gen" or fullname.startswith("sglang.multimodal_gen."):
+            raise ModuleNotFoundError("Diffusion is not installed", name=fullname)
+        else:
+            return None
+
+sys.meta_path.insert(0, NoDiffusion())
+from fastapi.testclient import TestClient
+from sglang_omni.client.client import Client
+from sglang_omni.serve.openai_api import create_app
+
+app = create_app(Client(None), model_name="test", supports_image_api=False)
+with TestClient(app) as client:
+    assert client.get("/v1/models").status_code == 200
+    assert client.post("/v1/images/generations", json={"prompt": "Draw"}).status_code == 404
+""",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(
@@ -329,3 +368,37 @@ def test_native_image_rejects_unsupported_controls_and_multiple_sources(api):
     )
     assert response.status_code == 400
     assert coordinator.requests == []
+
+
+@pytest.mark.parametrize("editing", [False, True])
+@pytest.mark.parametrize("client_error", [False, True])
+@pytest.mark.parametrize(
+    ("message", "status"),
+    [
+        ("Requested token count exceeds the model's maximum context length", 400),
+        ("Request requires more tokens than the thinker KV cache can hold", 400),
+        ("Image decoder failed", 500),
+    ],
+)
+def test_native_image_pipeline_errors(
+    api, monkeypatch, editing, client_error, message, status
+):
+    client, coordinator = api
+
+    async def submit(request_id, request):
+        if client_error:
+            raise ClientError(message)
+        else:
+            raise QueueFullError.from_message(message)
+
+    monkeypatch.setattr(coordinator, "submit", submit)
+    if editing:
+        response = client.post(
+            "/v1/images/edits",
+            data={"prompt": "Make it red"},
+            files={"image": ("source.png", b"png", "image/png")},
+        )
+    else:
+        response = client.post("/v1/images/generations", json={"prompt": "Draw"})
+    assert response.status_code == status
+    assert response.json()["detail"] == message
