@@ -242,6 +242,11 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             else:
                 pass
             raise
+        finally:
+            if self.is_aborted(msg.request_id):
+                self.cleanup_aborted_request(msg.request_id)
+            else:
+                pass
         if self.is_aborted(msg.request_id):
             return
         else:
@@ -266,11 +271,18 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             pass
 
         payloads = [msg.data for msg in active_batch]
-        results = self.batch_fn(payloads)
-        if asyncio.iscoroutine(results):
-            results = loop.run_until_complete(results)
-        else:
-            pass
+        try:
+            results = self.batch_fn(payloads)
+            if asyncio.iscoroutine(results):
+                results = loop.run_until_complete(results)
+            else:
+                pass
+        finally:
+            for request_id in {message.request_id for message in active_batch}:
+                if self.is_aborted(request_id):
+                    self.cleanup_aborted_request(request_id)
+                else:
+                    pass
         if len(results) != len(active_batch):
             raise ValueError(
                 "batch_compute_fn returned "
@@ -398,6 +410,11 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                         "SimpleScheduler: compute_fn failed for %s", msg.request_id
                     )
                     self.emit_error(msg.request_id, exc, self.outbox)
+                finally:
+                    if self.is_aborted(msg.request_id):
+                        self.cleanup_aborted_request(msg.request_id)
+                    else:
+                        pass
 
         bridge_task = asyncio.create_task(bridge_inbox())
         worker_tasks = [
