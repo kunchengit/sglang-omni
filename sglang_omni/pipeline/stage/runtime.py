@@ -63,7 +63,10 @@ from sglang_omni.proto import (
 from sglang_omni.proto.session import find_session_operation
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.message import IncomingMessage, StageScheduler
-from sglang_omni.scheduling.types import ParallelSchedulerCapabilities
+from sglang_omni.scheduling.types import (
+    ParallelSchedulerCapabilities,
+    SynchronizedRequestError,
+)
 
 TorchProfiler = current_platform.get_torch_profiler()
 
@@ -200,6 +203,17 @@ class Stage:
                 validate()
             else:
                 pass
+        else:
+            pass
+        enable_parallel_failure_handling = getattr(
+            scheduler, "enable_parallel_failure_handling", None
+        )
+        if (
+            self.fanout_work
+            and (tp_size > 1 or sp_size > 1)
+            and enable_parallel_failure_handling is not None
+        ):
+            enable_parallel_failure_handling()
         else:
             pass
         self.project_payload = project_payload or {}
@@ -1478,6 +1492,15 @@ class Stage:
             except _queue_mod.Empty:
                 continue
 
+            if out.type == "error" and not isinstance(
+                out.data, SynchronizedRequestError
+            ):
+                raise RuntimeError(
+                    f"Parallel follower stage {self.name} failed request "
+                    f"{out.request_id}: {out.data}"
+                )
+            else:
+                pass
             if out.type in {"result", "error"}:
                 self.acknowledge_terminal(out.request_id)
             else:
@@ -1505,10 +1528,8 @@ class Stage:
                 )
             elif out.type == "error":
                 logger.warning(
-                    "TP follower stage %s failed request %s: %s",
-                    self.name,
-                    out.request_id,
-                    out.data,
+                    f"Parallel follower stage {self.name} failed request "
+                    f"{out.request_id}: {out.data}"
                 )
                 self.clear_request_state(out.request_id)
             else:

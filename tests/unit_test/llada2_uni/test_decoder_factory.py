@@ -8,6 +8,7 @@ import pytest
 import torch
 from PIL import Image
 
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.llada2_uni.config import LLaDA2ImageDecoderStageConfig, Variants
 
 
@@ -63,7 +64,8 @@ def test_sp_decoder_configuration_roundtrip(variant):
     assert stage.sp_size == 2 and stage.tp_size == 1
     assert stage.factory.ulysses_degree == 2 and stage.gpu == [0, 1]
     if variant == "interleaved":
-        assert stage.factory.interleaved_nonterminal
+        kwargs = resolve_stage_factory_args(stage, rebuilt, gpu_id=0)
+        assert kwargs["interleaved_nonterminal"] is True
         assert not stage.terminal and stage.next == "interleaved_collect"
 
 
