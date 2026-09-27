@@ -49,22 +49,24 @@ The older shared-relay proposal #1487 is superseded by E/#1502. The older generi
 
 ## Validation and review gates
 
-The six candidates are based on `main` at `bddad43b` and tested with SGLang 0.5.20 on H20-3e. Each PR records its exact regression-tested revision, environment, and limitations, and identifies model/distributed runs from before the unrelated Qwen3-TTS-only refresh. Related regression suites passed as follows; their scopes overlap, so these counts are not additive.
+The six candidates are based on `main` at `7dc8909e` and validated with SGLang 0.5.20 on H20-3e. Each PR distinguishes its candidate revision from the exact tested revisions. The regression suites in the table and the full-checkpoint runs preceded a final realtime-transcription-only rebase; contribution patches, model execution paths, image APIs, and dependency versions are unchanged. Related regression suites passed as follows; their scopes overlap, so these counts are not additive.
 
 | PR | Passed | Skipped |
 | --- | ---: | ---: |
 | #2257 | 29 | 0 |
 | #1499 | 139 | 0 |
 | #1500 | 143 | 0 |
-| #1502 | 1357 | 2 |
-| #1486 | 1379 | 2 |
-| #1501 | 1449 | 5 |
+| #1502 | 1366 | 2 |
+| #1486 | 1388 | 2 |
+| #1501 | 1458 | 5 |
 
 The common skips are engine-contract checks for configurations without an SGLang engine. #1501's three additional Ring/SDPA skips are covered separately with FlashAttention.
 
-Real-checkpoint checks cover default-step two-frame interleaved output, 12 TP1/TP2 × eager/graph requests with actual graph capture/replay, and eight SP1/Ulysses2 image API cases. Separate production-entrypoint distributed fault tests cover synchronized recovery and stopping subsequent work after unknown rank failures. These are functional checks, not quality or performance benchmarks.
+After the final rebase, shared realtime/transcription, image/OpenAI API, client, and session-lifecycle checks on #1501's candidate `b29eb2fd` passed **591 tests with no skips**. This covers the intervening upstream import/API change; it is separate from the full-checkpoint results below.
 
-Known boundaries remain explicit: the reduced-step interleaved sample failed without EOI, cross-TP image equivalence is unquantified, and decoder-Turbo output has a repeatable cross-SP pixel difference (MAE 1.626 on the 0–255 scale in the tested sample). These observations do not establish perceptual equivalence. No full-checkpoint Ring, SP4, or automatic distributed fault recovery is claimed.
+Real-checkpoint checks cover default-step two-frame interleaved output, 18 TP1/TP2 requests across eager, non-compiled graphs and compile-enabled graphs with actual capture/replay, and nine SP1/Ulysses2 image API cases. Separate production-entrypoint distributed fault tests cover synchronized recovery and stopping subsequent work after unknown rank failures. These are functional checks, not quality or performance benchmarks.
+
+Known boundaries remain explicit: interleaved generation intentionally rejects invalid frames, including the reduced-step sample without EOI. TP1/TP2 and decoder-Turbo SP1/SP2 outputs are not byte-identical. Fixed-input follow-ups reproduced the first observed BF16 projection differences on a single GPU: input-feature-sharded matrix multiplication plus summation for TP, and full- versus split-sequence matrix multiplication for decoder SP. Non-compiled thinker graphs matched eager outputs within each TP size; compile-enabled graphs produced different PNGs. The compilation difference has not been localized or quality-evaluated. These bounded results do not establish full-model perceptual equivalence. No full-checkpoint Ring, SP4, or automatic distributed fault recovery is claimed.
 
 Phase 1 review focuses on request/response contracts, model correctness, raw-image processing, lifecycle/error handling, and representative generation paths. Phase 2 additionally needs topology-specific TP/SP and eager/graph checks. Performance claims require a stated workload, warmup, precision, hardware, and quality comparison; historical measurements are not proof for changed revisions.
 

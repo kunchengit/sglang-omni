@@ -48,7 +48,7 @@ Tracked in #2207; continues the work in #445.
 
 ## Validation
 
-Tested revision: `86b7caec49baee8ec195ca06cc0c71d7cd2fc40e`, based on `main` at `bddad43b` and #1499.
+Candidate revision: `9cc17c25f10025f37432a03d83b5fabdf165bd17`, based on `main` at `7dc8909e` and #1499. The suites below ran on `ce5d2f45`, before a realtime-transcription-only rebase; the contribution, model runtime, image APIs, and dependencies are unchanged.
 
 - Image API, LLaDA2-Uni, and dLLM scheduler suites: **143 passed, 0 skipped**, including the inherited small-checkpoint GPU decoder comparison.
 - Coverage includes the first-BOI boundary, missing-boundary errors, CFG enabled/disabled, state round trips, original prompt versus two-pass completion accounting, and normal-mode regression tests.

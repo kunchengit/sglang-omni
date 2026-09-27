@@ -70,7 +70,7 @@ Tracked in #2207; continues the work in #445.
 
 ## Validation
 
-Tested revision: `fcac814a65b60dcadfe6ec00815fd888df0e7b50`, based on `main` at `bddad43b` and #2257.
+Candidate revision: `36059f66c45c9afbef69a0ddcfcd279a05ac75ad`, based on `main` at `7dc8909e` and #2257. The suites below ran on `e22e38ae`, before a realtime-transcription-only rebase; the contribution, model runtime, image APIs, and dependencies are unchanged.
 
 - Image API, LLaDA2-Uni, and dLLM scheduler suites: **139 passed, 0 skipped**.
 - The opt-in GPU test ran the SGLang SP1 decoder against Diffusers using a small synthetic checkpoint. This is backend numerical coverage, not a full-checkpoint image-quality evaluation.

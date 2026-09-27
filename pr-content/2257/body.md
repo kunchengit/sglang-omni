@@ -25,7 +25,7 @@ Tracked in #2207; continues the work in #445.
 
 ## Validation
 
-Tested revision: `89f31983ef9841afb538be7f1545f017da073d6d`, based on `main` at `bddad43b`.
+Candidate revision: `2bddd0fa9999d92f95f790a597076c660d0f8f76`, based on `main` at `7dc8909e`. The suites below ran on `a156aa62`, before a realtime-transcription-only rebase; the contribution, model runtime, and dependencies are unchanged.
 
 - LLaDA2-Uni and dLLM scheduler suites: **29 passed, 0 skipped**.
 - Environment: Linux, NVIDIA H20-3e, SGLang 0.5.20, PyTorch 2.13.0+cu130, Transformers 5.12.1, and Triton 3.7.1.
