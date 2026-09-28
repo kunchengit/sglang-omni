@@ -56,6 +56,8 @@ Candidate revision: `9cc17c25f10025f37432a03d83b5fabdf165bd17`, based on `main` 
 
 Reference-control-flow checks and small-checkpoint tests do not establish full-model image-quality parity. No performance improvement is claimed here.
 
+The September 27 full-checkpoint review also exercised a thinking T2I request through the SGLang decoder and visually inspected the returned image. This is a single-sample generation check, not a thinking-mode quality benchmark; the full GenEval/ImgEdit scores reported in #1499 exercise normal mode.
+
 ## Contributors
 
 - @kunchengit

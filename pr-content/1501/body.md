@@ -51,6 +51,31 @@ Candidate revision: `b29eb2fd53fb144dbf1aaaff75af7dce2070b49d`, based on `main` 
 
 These are functional and bounded numerical checks, not a full-checkpoint quality or performance benchmark. Ring full-checkpoint inference, SP4, and general speedup remain unvalidated.
 
+## Full-checkpoint accuracy (2026-09-28)
+
+At `b29eb2fd`, Ulysses SP2 completed all **553/553** GenEval requests, scoring **0.88993** across the six tasks and **494/553 (89.33%)** across individual examples. All 553 request payloads and decoded RGB hashes match the current #1499 SP1 reference at `36059f66` exactly.
+
+Both runs used a BF16 LLaDA2.0-Uni checkpoint, TP1 eager thinker, SGLang decoder with `torch_sdpa`, CFG 4.0, CFG rescale 0.7, seed 42, 32 dLLM steps, 8 decoder-turbo steps, and 1024x1024 output.
+
+Full original-image ImgEdit also completed **737/737** requests with all request payloads and decoded RGB hashes identical to SP1. The official local judge scored SP2 **3.50814** versus SP1 **3.52307**, with zero parsing or inference errors. Since generated pixels are identical, this difference is judging variation rather than an SP generation change. Edit requests used text CFG 4.0, image CFG 0.0, CFG rescale 0.7, seed 42, 8 dLLM steps and 8 decoder-turbo steps. No precomputed `.pt` inputs were used.
+
+These results establish exact image agreement for the tested benchmarks/configurations, without extending the claim to other shapes, attention backends, Ring, or dtypes.
+
+## Warm performance (2026-09-28)
+
+Same revision `b29eb2fd`, H20-3e, BF16, TP1 eager thinker on GPU0, and SGLang decoder with `torch_sdpa` on GPU1 (SP1) or GPU1/2 (Ulysses SP2). Cases ran sequentially on reserved GPUs, with 3 warmups and 7 measured requests per workload and measurement mode. Values are medians in seconds.
+
+| Workload | Decoder SP1 | Decoder SP2 | Decoder speedup | HTTP E2E SP1 | HTTP E2E SP2 | E2E speedup |
+| --- | --- | --- | --- | --- | --- | --- |
+| T2I | 8.985 | 5.118 | 1.76x | 39.223 | 35.188 | 1.11x |
+| Edit | 8.984 | 5.119 | 1.75x | 18.627 | 14.684 | 1.27x |
+
+Both workloads use seed 42, CFG rescale 0.7, 32 dLLM steps and 8 decoder-turbo steps. T2I uses CFG 4.0 at 1024x1024. Original-image edit uses text CFG 4.0 and image CFG 1.5, with output dimensions derived from the source. The edit performance workload differs from the accuracy benchmark's 8 dLLM steps and image CFG 0.0.
+
+HTTP E2E is measured without request profiling and excludes client image saving. Decoder wall time includes PNG encoding and comes from a separate native stage-event run without Torch profiler; it is not GPU-kernel-only time. Stage-event E2E differed from the control by less than 0.73%. Thinker medians were 30.500/30.201 seconds for T2I and 9.543/9.428 seconds for edit (SP1/SP2), limiting E2E speedup. These eager-thinker E2E results must not be compared directly with #1486's graph-enabled thinker timings.
+
+All 20 outputs per workload/deployment, including warmups and both measurement modes, had the same RGB hash; SP1 and SP2 also matched each other. These measurements cover Ulysses SP2 only, not Ring or combined thinker TP2 plus decoder SP2.
+
 ## Contributors
 
 - @kunchengit

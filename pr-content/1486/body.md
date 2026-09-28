@@ -45,6 +45,46 @@ Candidate revision: `b142ecd08127d9843727ed689a7ef1acc1a14c5e`, based on `main` 
 
 The matrix did not enable the optional MoE tuning overrides. These are functional and sample-consistency checks, not quality or performance benchmarks. No general speedup, TP4 result, or expert-parallel validation is claimed.
 
+## Current accuracy (2026-09-28)
+
+At `b142ecd0`, TP2 with CUDA graphs and native `TopK` routing completed all 1,050 MMMU examples. The API judge scored **494/1,050 (47.0476%)**, including **426/900 (47.3333%)** on the validation split; its single fallback judgment was incorrect.
+
+The current #2257 reference at `2bddd0fa` uses TP1 eager execution and scored 516/1,050, including 437/900 on validation. Its answers are byte-identical to the historical post-CFG-correctness source before graph removal. The comparison changes TP size, graph execution, and routing implementation together, so the score difference cannot be attributed to TP alone.
+
+A full control on this same `b142ecd0` revision retained native SGLang `TopK`, enabled decode graphs and disabled `torch.compile` for both TP sizes:
+
+| Thinker | All questions | Validation split | Random fallback |
+| --- | --- | --- | --- |
+| TP1 | 500/1,050 (47.6190%) | 427/900 (47.4444%) | 2, including 1 correct |
+| TP2 | 494/1,050 (47.0476%) | 426/900 (47.3333%) | 1, incorrect |
+
+The VLMEvalKit API judge used `doubao-seed-2-0-lite-260428`. Relative to TP1, TP2 gained 121 questions and lost 127 (paired exact test p=0.751). Excluding the three questions with a fallback in either run gives 499 versus 494 correct. Only ten answer texts were identical. This control does not show a statistically significant accuracy decrease, but it does not establish numerical or per-question equivalence.
+
+Two captured eager forwards checked all 19 MoE layers: both TP2 ranks agreed, and merged outputs exactly matched sums of captured rank-local routed/shared outputs. Changing sum grouping did not change these outputs. With identical first-MoE input, native TopK IDs/weights and reconstructed down-projection activation shards matched exactly; sampled expert weight shards also matched. High-precision reconstruction localized the remaining sampled down-projection difference to separately rounded BF16 partial products. These bounded diagnostics found no expert merge-order defect; they do not attribute the aggregate MMMU difference to a single operator. Production retains native SGLang routing.
+
+The A-to-F TP1 change is separate: commit `cf201b3a` replaces A's Torch routing sequence with SGLang `TopK` even at TP1. A matched eager trace first diverged at layer 1 routing, after identical inputs, attention outputs and router logits. The selected expert sets matched, but ordering and weights differed (expert-aligned maximum weight difference 3.90e-6). An isolated routing-only reversal retained F's reduction code and restored the captured logits exactly, plus all 60 answer texts in the fixed subset. This localizes the observed TP1 output change to routing, without proving the cause of every full-benchmark score change. The diagnostic reversal is not part of this PR.
+
+On a pre-existing fixed 60-question subset, this candidate's TP1 eager and graph runs produced identical answer texts. Their API judgments scored 32/60 and 31/60 respectively; the one-point difference is judge variability. The same subset in the full runs scored 32/60 for #2257 and 33/60 for TP2. This bounded check found no graph-induced answer change; it does not establish full-dataset TP equivalence or explain the full-score difference.
+
+The candidate's native-image GenEval run achieved a **task-macro score of 0.88023**, with **487/553 individual cases correct (88.07%)**. These are distinct aggregation measures. The current #1499 reference at `36059f66`, TP1 eager, scored **0.88993** and **494/553** on the same 553 request payloads. This comparison changes routing and graph execution as well as TP size, so the 0.00970 task-macro difference is not isolated to TP. Decoder-SP (#1501) reproduced all 553 reference images exactly.
+
+Full ImgEdit evaluation on the same revision completed **737/737** original-image requests. The official local ImgEdit judge reported a sample-mean score of **3.54093**, with zero parsing or inference errors. Requests used the native image-edit API, text CFG 4.0, image CFG 0.0, CFG rescale 0.7, seed 42, 8 dLLM steps, and 8 decoder-turbo steps. The thinker used TP2 with CUDA graphs enabled and `torch.compile` disabled; the SGLang image decoder used SP1 and `torch_sdpa`. This evaluates original-image preprocessing, not precomputed `.pt` inputs. The current #1499 TP1 reference scored **3.52307** on all 737 examples with the same request settings. There is no aggregate edit-score decrease in this comparison; this is not a claim of per-image or MMMU equivalence.
+
+## Warm performance (2026-09-28)
+
+Same revision `b142ecd0`, H20-3e, BF16, native SGLang TopK, decode graphs enabled and `torch.compile` disabled. TP1 uses GPU0, TP2 uses GPU0/1; both place the SGLang SP1 decoder on GPU2 with `torch_sdpa`. Cases run sequentially on reserved GPUs, with 3 warmups and 7 measured requests per workload and measurement mode. Values below are medians in seconds.
+
+| Workload | Thinker TP1 | Thinker TP2 | Thinker speedup | HTTP E2E TP1 | HTTP E2E TP2 | E2E speedup |
+| --- | --- | --- | --- | --- | --- | --- |
+| T2I | 6.529 | 5.097 | 1.28x | 15.525 | 14.086 | 1.10x |
+| Edit | 3.105 | 2.704 | 1.15x | 12.197 | 11.721 | 1.04x |
+
+Both workloads use seed 42, CFG rescale 0.7, 32 dLLM steps and 8 decoder-turbo steps. T2I uses CFG 4.0 at 1024x1024. Original-image edit uses text CFG 4.0 and image CFG 1.5, with dimensions derived from the source. This edit performance configuration differs from the accuracy benchmark's 8 dLLM steps and image CFG 0.0.
+
+HTTP E2E is measured without request profiling and excludes client image saving. Stage wall times are collected in a separate native stage-event run without Torch profiler; they are not GPU-kernel-only times, and decoder stage time includes PNG encoding. Enabling stage events changed median E2E by less than 0.13% across these cases. Decoder medians remained 8.940-8.985 seconds. Each deployment reproduced its image hashes across all repeats and both measurement modes; TP1 and TP2 images differ.
+
+TP2 explicitly sets `SGLANG_MOE_CONFIG_DIR` to the repository's `examples/tuning/llada2_uni/h20_tp2` directory. Logs confirm loading its up/down configurations, but the messages do not identify ranks individually. TP1 uses the installed configuration root, which is not asserted to be untuned. This measures the deployed TP configurations, not the isolated benefit of tuning overrides or a universal TP2 speedup.
+
 ## Contributors
 
 - @kunchengit
