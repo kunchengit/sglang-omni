@@ -1,18 +1,26 @@
 ## Motivation
 
-Enable tensor-parallel LLaDA2-Uni thinker execution for understanding and image generation with FP32 expert-output reduction. Add opt-in CFG-aware CUDA graph execution to reduce eligible repeated-forward launch overhead. Native SGLang routing changes numerical outputs even at TP1; the accuracy tradeoff is measured below.
+Enable tensor-parallel LLaDA2-Uni thinker execution for understanding and image generation with FP32 expert-output reduction. Add opt-in CFG-aware CUDA graph execution to reduce eligible repeated-forward launch overhead. Keep reference Torch routing by default, with native SGLang TopK available as an explicit performance option; the measured numerical and accuracy tradeoffs are below.
 
 ## Modifications
 
 - Propagate stage TP rank, size, GPU placement, and rendezvous settings into thinker workers and fan out dLLM work to participating ranks.
 - Combine rank-local shared and routed expert outputs in FP32, perform one TP all-reduce, and cast back to the output dtype.
-- Reuse SGLang's `TopK` routing with sigmoid scoring, expert correction bias, normalization, and routing scale. Its fused sigmoid approximation is not numerically identical to the reference Torch implementation.
+- Default to #2257's FP32 Torch routing. Optionally reuse SGLang's `TopK` with sigmoid scoring, expert correction bias, normalization, and routing scale. Its fused sigmoid approximation is not numerically identical to the reference implementation.
 - Keep the participating GPU set visible to each thinker rank so SGLang can initialize custom all-reduce with the correct rank-to-device mapping.
 - Select the CFG-aware model-runner hook for `LowConfidenceCFG` without replacing the graph path for unrelated models.
 - Use CPU padding metadata to decide graph eligibility: active-query padding runs eagerly; eligible blocks can replay after padding is entirely in the cached prefix.
 - Include optional H20 TP2 MoE configurations for existing SGLang kernels. These are parameter configurations, not new kernel implementations.
 
 ## Usage and execution scope
+
+Routing is selected at model startup for both TP1 and TP2. The default is `torch`, preserving #2257's routing arithmetic. Opt into SGLang TopK with:
+
+```bash
+--thinker.engine.json_model_override_args '{"llada2_uni_topk_backend":"sglang"}'
+```
+
+Use `"torch"` to explicitly select the default. Combine this field with any other model overrides in the same JSON object. Both routes retain the same expert implementation and FP32 TP reduction; the option works with eager execution and CUDA graphs and requires no checkpoint or SGLang source changes.
 
 The thinker remains eager by default. With SGLang 0.5.20, use `--thinker.engine.cuda_graph_backend_decode full` to opt into full decode graphs; prefill remains eager. Use `--thinker.engine.cuda_graph_backend_decode disabled` to explicitly select eager decode. Phase-specific or JSON graph settings take precedence over the compatibility `disable_cuda_graph` flag.
 
@@ -34,7 +42,9 @@ Tracked in #2207; continues the work in #445.
 
 ## Validation
 
-Candidate revision: `b142ecd08127d9843727ed689a7ef1acc1a14c5e`, based on `main` at `7dc8909e` and #1502. The regression suite and full-checkpoint matrix below ran on `7905d462`, before a realtime-transcription-only rebase; the contribution, model runtime, image APIs, and dependencies are unchanged.
+Current revision: `c1b8b039`, based on `main` at `7dc8909e` and #1502. It adds the startup routing selector to `b142ecd0`. The older regression suite and full-checkpoint matrix below ran on `7905d462`, before the realtime-transcription-only rebase and routing-selector change, using native SGLang routing.
+
+For the routing-selector change, all 9 focused thinker precision tests and applicable repository formatting/static checks passed. Two real TP2 deployments with decode graphs enabled and compilation disabled each completed one T2I request, one original-image edit and one fixed MMMU request. The default Torch path reproduced the earlier `d88f7c2e` reference run's image RGB hashes and answer hash; the explicit `sglang` CLI override reproduced the `b142ecd0` native run's hashes. All six matched their respective prior runs exactly. This was a startup and output-regression check, not a repeat of full-dataset scoring or latency measurement.
 
 - Related unit/regression suites: **1388 passed, 2 skipped**. The skips are engine-contract checks in configurations without an SGLang engine. Applicable formatting and static checks passed.
 - Full-checkpoint matrix on H20-3e: TP1 and TP2, each with eager execution, decode graphs without compilation, and decode graphs with the default compilation setting. All **18 requests** passed: two-way CFG T2I, three-way CFG raw-image editing, and a long-prompt T2I case per deployment. Requests used seed 42, 16 dLLM steps and 5 decoder steps, with the Diffusers decoder on a separate GPU.
@@ -60,7 +70,7 @@ A full control on this same `b142ecd0` revision retained native SGLang `TopK`, e
 
 The VLMEvalKit API judge used `doubao-seed-2-0-lite-260428`. Relative to TP1, TP2 gained 121 questions and lost 127 (paired exact test p=0.751). Excluding the three questions with a fallback in either run gives 499 versus 494 correct. Only ten answer texts were identical. This control does not show a statistically significant accuracy decrease, but it does not establish numerical or per-question equivalence.
 
-Two captured eager forwards checked all 19 MoE layers: both TP2 ranks agreed, and merged outputs exactly matched sums of captured rank-local routed/shared outputs. Changing sum grouping did not change these outputs. With identical first-MoE input, native TopK IDs/weights and reconstructed down-projection activation shards matched exactly; sampled expert weight shards also matched. High-precision reconstruction localized the remaining sampled down-projection difference to separately rounded BF16 partial products. These bounded diagnostics found no expert merge-order defect; they do not attribute the aggregate MMMU difference to a single operator. Production retains native SGLang routing.
+Two captured eager forwards checked all 19 MoE layers: both TP2 ranks agreed, and merged outputs exactly matched sums of captured rank-local routed/shared outputs. Changing sum grouping did not change these outputs. With identical first-MoE input, native TopK IDs/weights and reconstructed down-projection activation shards matched exactly; sampled expert weight shards also matched. High-precision reconstruction localized the remaining sampled down-projection difference to separately rounded BF16 partial products. These bounded diagnostics found no expert merge-order defect; they do not attribute the aggregate MMMU difference to a single operator.
 
 ### Full MMMU routing ablation
 
@@ -81,7 +91,7 @@ A matched eager trace first diverged in MoE routing after identical inputs, atte
 
 API scoring and TP outputs remain variable: reference TP2 gained 140 questions and lost 117 against native TP2 (paired exact test p=0.170). Excluding the two questions with fallback judgments in either TP2 run gives 516 versus 494 correct. The TP1 routing comparison has p=0.314. Neither score improvement reaches the conventional 0.05 significance threshold in this single run. Reference TP1 and TP2 both score 517, but only 15 complete answer texts match; equal scores do not establish numerical equivalence.
 
-The reference-routing revision is an experimental ablation and is **not included in this PR**; production still uses native SGLang TopK. The routing performance comparison below reports its measured latency benefit alongside this accuracy tradeoff.
+These full-dataset results were measured on the separate revisions above, before the startup selector was added. This PR now includes the same reference-routing arithmetic as the default and retains native SGLang TopK as an opt-in. The routing performance comparison below reports the measured latency benefit alongside the accuracy tradeoff; it is not a new full-dataset evaluation of the selector commit.
 
 On a pre-existing fixed 60-question subset, this candidate's TP1 eager and graph runs produced identical answer texts. Their API judgments scored 32/60 and 31/60 respectively; the one-point difference is judge variability. The same subset in the full runs scored 32/60 for #2257 and 33/60 for TP2. This bounded check found no graph-induced answer change; it does not establish full-dataset TP equivalence or explain the full-score difference.
 

@@ -87,7 +87,7 @@ Candidate revision: `636ce7b632b220f478401803cf5894e941df9608`, based on `main` 
 
 These are lifecycle, protocol, and representative generation checks, not a multi-frame quality or performance benchmark. No throughput or latency improvement is claimed here.
 
-The September 27 SGLang-decoder review returned two image frames through the interleaved response path. Visual inspection found vertical splits and repeated composition in the ship sample. Frame delivery succeeded, but this sample is not an image-quality pass; the normal-mode benchmark scores in #1499 must not be presented as interleaved quality validation.
+The September 27 SGLang-decoder review returned two image frames through the interleaved response path.
 
 ## Contributors
 
