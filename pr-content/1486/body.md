@@ -81,7 +81,7 @@ A matched eager trace first diverged in MoE routing after identical inputs, atte
 
 API scoring and TP outputs remain variable: reference TP2 gained 140 questions and lost 117 against native TP2 (paired exact test p=0.170). Excluding the two questions with fallback judgments in either TP2 run gives 516 versus 494 correct. The TP1 routing comparison has p=0.314. Neither score improvement reaches the conventional 0.05 significance threshold in this single run. Reference TP1 and TP2 both score 517, but only 15 complete answer texts match; equal scores do not establish numerical equivalence.
 
-The reference-routing revision is an experimental ablation and is **not included in this PR**; production still uses native SGLang TopK. Matched routing E2E measurements are pending. The warm TP comparison below measures native routing only and must not be read as a native-versus-reference routing speed comparison.
+The reference-routing revision is an experimental ablation and is **not included in this PR**; production still uses native SGLang TopK. The routing performance comparison below reports its measured latency benefit alongside this accuracy tradeoff.
 
 On a pre-existing fixed 60-question subset, this candidate's TP1 eager and graph runs produced identical answer texts. Their API judgments scored 32/60 and 31/60 respectively; the one-point difference is judge variability. The same subset in the full runs scored 32/60 for #2257 and 33/60 for TP2. This bounded check found no graph-induced answer change; it does not establish full-dataset TP equivalence or explain the full-score difference.
 
@@ -103,6 +103,25 @@ Both workloads use seed 42, CFG rescale 0.7, 32 dLLM steps and 8 decoder-turbo s
 HTTP E2E is measured without request profiling and excludes client image saving. Stage wall times are collected in a separate native stage-event run without Torch profiler; they are not GPU-kernel-only times, and decoder stage time includes PNG encoding. Enabling stage events changed median E2E by less than 0.13% across these cases. Decoder medians remained 8.940-8.985 seconds. Each deployment reproduced its image hashes across all repeats and both measurement modes; TP1 and TP2 images differ.
 
 TP2 explicitly sets `SGLANG_MOE_CONFIG_DIR` to the repository's `examples/tuning/llada2_uni/h20_tp2` directory. Logs confirm loading its up/down configurations, but the messages do not identify ranks individually. TP1 uses the installed configuration root, which is not asserted to be untuned. This measures the deployed TP configurations, not the isolated benefit of tuning overrides or a universal TP2 speedup.
+
+### Native versus reference routing
+
+The completed routing comparison uses production `b142ecd0` and routing-only experiment `d88f7c2e`, with the same checkpoint, BF16, `torch_sdpa`, decode graphs enabled and compilation disabled. Each deployment runs one fixed T2I prompt, one original-image edit and one MMMU question (item 405). Each workload has 3 warmups and 7 measured requests in separate unprofiled HTTP and native stage-event passes. This is a short latency experiment, not another full benchmark. Values are medians in seconds; speedup is reference HTTP latency divided by native HTTP latency.
+
+| Thinker | Workload | Native HTTP E2E | Reference HTTP E2E | Native Thinker | Reference Thinker | Native E2E speedup |
+| --- | --- | --- | --- | --- | --- | --- |
+| TP1 | T2I | 15.539 | 16.306 | 6.527 | 7.320 | 1.049x |
+| TP1 | Edit | 12.178 | 12.503 | 3.110 | 3.466 | 1.027x |
+| TP1 | MMMU item 405 | 3.531 | 5.454 | 3.495 | 5.424 | 1.544x |
+| TP2 | T2I | 14.070 | 14.918 | 5.105 | 5.976 | 1.060x |
+| TP2 | Edit | 11.715 | 12.052 | 2.708 | 3.039 | 1.029x |
+| TP2 | MMMU item 405 | 3.322 | 4.062 | 3.292 | 4.022 | 1.223x |
+
+At TP2, native routing reduces measured T2I E2E by 0.847 seconds and edit E2E by 0.337 seconds. The corresponding Thinker speedups are 1.170x and 1.122x. The decoder remains SP1 on a separate GPU, limiting the impact of faster routing on image-request E2E. These measurements accompany the observed full-MMMU scores of 494/1,050 with native routing and 517/1,050 with reference routing; they do not establish a universal speed/accuracy tradeoff across datasets or hardware.
+
+TP1 deployments partially overlap on disjoint physical GPU pairs (native 0/2, reference 1/3), sharing host CPU and memory bandwidth. TP2 deployments run sequentially on GPUs 0/1 for the thinker and GPU 2 for the decoder; both explicitly load their identical repository H20 TP2 MoE tuning configurations. This is not a fully isolated same-device TP1 routing comparison. Native stage-event collection changed median HTTP E2E by less than 0.3% in all cases. Stage timings remain wall times, not GPU-kernel-only measurements.
+
+MMMU uses the same request with 533 prompt tokens and a 2,048-token limit, but generation differs: TP1 native/reference report 2,048/1,572 completion tokens and 8,098/4,135 answer characters; TP2 report 2,048/2,048 tokens and 7,290/5,759 characters. Each deployment's answer hash is stable across repeats. Even equal completion lengths do not guarantee equal dLLM forward work, so the MMMU ratios describe actual request latency, not fixed-workload router throughput. Image request settings are those in the warm-performance section above.
 
 ## Contributors
 
