@@ -1,12 +1,12 @@
 ## Motivation
 
-Enable tensor-parallel LLaDA2-Uni thinker execution for understanding and image generation while preserving its MoE numerical behavior. Add opt-in CFG-aware CUDA graph execution to reduce eligible repeated-forward launch overhead.
+Enable tensor-parallel LLaDA2-Uni thinker execution for understanding and image generation with FP32 expert-output reduction. Add opt-in CFG-aware CUDA graph execution to reduce eligible repeated-forward launch overhead. Native SGLang routing changes numerical outputs even at TP1; the accuracy tradeoff is measured below.
 
 ## Modifications
 
 - Propagate stage TP rank, size, GPU placement, and rendezvous settings into thinker workers and fan out dLLM work to participating ranks.
 - Combine rank-local shared and routed expert outputs in FP32, perform one TP all-reduce, and cast back to the output dtype.
-- Reuse SGLang's `TopK` routing while preserving sigmoid scores, expert correction bias, normalization, and routing scale.
+- Reuse SGLang's `TopK` routing with sigmoid scoring, expert correction bias, normalization, and routing scale. Its fused sigmoid approximation is not numerically identical to the reference Torch implementation.
 - Keep the participating GPU set visible to each thinker rank so SGLang can initialize custom all-reduce with the correct rank-to-device mapping.
 - Select the CFG-aware model-runner hook for `LowConfidenceCFG` without replacing the graph path for unrelated models.
 - Use CPU padding metadata to decide graph eligibility: active-query padding runs eagerly; eligible blocks can replay after padding is entirely in the cached prefix.
@@ -62,7 +62,26 @@ The VLMEvalKit API judge used `doubao-seed-2-0-lite-260428`. Relative to TP1, TP
 
 Two captured eager forwards checked all 19 MoE layers: both TP2 ranks agreed, and merged outputs exactly matched sums of captured rank-local routed/shared outputs. Changing sum grouping did not change these outputs. With identical first-MoE input, native TopK IDs/weights and reconstructed down-projection activation shards matched exactly; sampled expert weight shards also matched. High-precision reconstruction localized the remaining sampled down-projection difference to separately rounded BF16 partial products. These bounded diagnostics found no expert merge-order defect; they do not attribute the aggregate MMMU difference to a single operator. Production retains native SGLang routing.
 
-The A-to-F TP1 change is separate: commit `cf201b3a` replaces A's Torch routing sequence with SGLang `TopK` even at TP1. A matched eager trace first diverged at layer 1 routing, after identical inputs, attention outputs and router logits. The selected expert sets matched, but ordering and weights differed (expert-aligned maximum weight difference 3.90e-6). An isolated routing-only reversal retained F's reduction code and restored the captured logits exactly, plus all 60 answer texts in the fixed subset. This localizes the observed TP1 output change to routing, without proving the cause of every full-benchmark score change. The diagnostic reversal is not part of this PR.
+### Full MMMU routing ablation
+
+Commit `cf201b3a` replaces #2257's Torch routing sequence with SGLang `TopK` even at TP1. To isolate this change, experimental revision `d88f7c2e` restores only the reference routing on top of `b142ecd0`, retaining this PR's TP implementation and FP32 expert-output reduction. Both routing paths use the same checkpoint and all 1,050 requests, BF16, `torch_sdpa`, decode graphs enabled, `torch.compile` disabled, temperature 0 and `max_tokens=2048`. Scoring uses the same VLMEvalKit API judge named above.
+
+| Routing path | Thinker | All questions | Validation split | Random fallback |
+| --- | --- | --- | --- | --- |
+| Native SGLang TopK | TP1 | 500/1,050 (47.6190%) | 427/900 (47.4444%) | 2, including 1 correct |
+| Reference Torch routing from #2257 | TP1 | 517/1,050 (49.2381%) | 438/900 (48.6667%) | 2, both incorrect |
+| Native SGLang TopK | TP2 | 494/1,050 (47.0476%) | 426/900 (47.3333%) | 1, incorrect |
+| Reference Torch routing from #2257 | TP2 | 517/1,050 (49.2381%) | 452/900 (50.2222%) | 2, including 1 correct |
+
+**Native SGLang TopK scored lower in this controlled run:** 17 fewer correct answers at TP1 (1.6190 percentage points) and 23 fewer at TP2 (2.1905 percentage points). This is an observed accuracy tradeoff of the routing replacement, not evidence that tensor parallelism alone caused the original cross-PR score gap.
+
+With reference routing, TP1 reproduced **all 1,050 answer texts from #2257 exactly**. Its score of 517 versus #2257's 516 comes from 13 changed API judgments (7 gains and 6 losses), not changed model answers. This full-dataset control establishes that restoring the routing removes the observed A-to-F TP1 generation difference.
+
+A matched eager trace first diverged in MoE routing after identical inputs, attention outputs and router logits. On identical captured inputs, all 608 token/layer rows selected the same expert sets, but ordering and weights differed. The installed FlashInfer 0.6.17 routing kernel uses a fast `tanh`-based sigmoid approximation; the first captured layer's expert-aligned maximum weight difference was 3.90e-6. Restoring reference routing reproduced the captured logits exactly. These observations identify a numerical source of the output divergence, not an expert merge-order bug.
+
+API scoring and TP outputs remain variable: reference TP2 gained 140 questions and lost 117 against native TP2 (paired exact test p=0.170). Excluding the two questions with fallback judgments in either TP2 run gives 516 versus 494 correct. The TP1 routing comparison has p=0.314. Neither score improvement reaches the conventional 0.05 significance threshold in this single run. Reference TP1 and TP2 both score 517, but only 15 complete answer texts match; equal scores do not establish numerical equivalence.
+
+The reference-routing revision is an experimental ablation and is **not included in this PR**; production still uses native SGLang TopK. Matched routing E2E measurements are pending. The warm TP comparison below measures native routing only and must not be read as a native-versus-reference routing speed comparison.
 
 On a pre-existing fixed 60-question subset, this candidate's TP1 eager and graph runs produced identical answer texts. Their API judgments scored 32/60 and 31/60 respectively; the one-point difference is judge variability. The same subset in the full runs scored 32/60 for #2257 and 33/60 for TP2. This bounded check found no graph-induced answer change; it does not establish full-dataset TP equivalence or explain the full-score difference.
 
