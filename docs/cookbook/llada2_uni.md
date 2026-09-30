@@ -30,8 +30,12 @@ The CFG thinker currently uses synchronous eager execution. An explicit
 CUDA graph request is rejected until CFG graph metadata is supported.
 
 ```bash
-sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
+  --thinker.engine.enable_torch_compile false
 ```
+
+The cookbook explicitly disables `torch.compile` to match the validated
+generation settings. CUDA Graph execution is controlled separately.
 
 ## Image Generation and Editing
 
