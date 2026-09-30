@@ -12,21 +12,73 @@ Allow one LLaDA2-Uni request to alternate text and multiple generated images. Ea
 
 ## Usage
 
-Use `POST /v1/chat/completions` on a deployment configured with the interleaved pipeline:
+The validated three-frame example uses this deployment configuration. Set `model_path` to your LLaDA2.0-Uni checkpoint and select either `sglang` or `diffusers` for the decoder backend:
+
+```yaml
+config_cls: LLaDA2UniInterleavedPipelineConfig
+model_path: /path/to/LLaDA2.0-Uni
+stages:
+  thinker:
+    gpu: 0
+    gpu_memory_fraction: 0.65
+    engine:
+      mem_fraction_static: 0.55
+      max_total_tokens: 24576
+      max_running_requests: 4
+      disable_cuda_graph: true
+      enable_torch_compile: false
+  image_decode:
+    gpu: 0
+    gpu_memory_fraction: 0.25
+    factory:
+      backend: sglang
+      attention_backend: torch_sdpa
+      decode_mode: decoder-turbo
+      num_steps: 8
+```
+
+Launch with the configuration saved as `interleaved.yaml`:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m sglang_omni.cli serve \
+  --config interleaved.yaml --host 127.0.0.1 --port 8000
+```
+
+Send this payload to `POST /v1/chat/completions`:
 
 ```json
 {
-  "messages": [{"role": "user", "content": "Tell an illustrated story in three scenes"}],
+  "model": "llada2-uni",
+  "messages": [{"role": "user", "content": "Please generate a sequence of 3 frames showing an aerial view of a rusted shipwreck resting on a shallow coral reef, with the camera gradually moving closer and adjusting angle to reveal the full structure and surrounding ocean environment."}],
   "modalities": ["text", "image"],
   "stream": false,
+  "temperature": 0.0,
+  "seed": 42,
+  "max_tokens": 8192,
   "image_generation": {
     "mode": "interleaved",
     "max_frames": 3,
-    "decoder_steps": 20,
+    "text_max_new_tokens": 8192,
+    "dllm_steps": 32,
+    "decode_mode": "decoder-turbo",
+    "decoder_steps": 8,
+    "cfg_scale": 0.0,
+    "cfg_text_scale": 4.0,
+    "cfg_image_scale": 1.0,
+    "cfg_rescale": 0.5,
     "seed": 42
   }
 }
 ```
+
+With the payload in `request.json`:
+
+```bash
+curl --fail-with-body http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' --data-binary @request.json > response.json
+```
+
+`dllm_steps` controls image-VQ generation; text generation keeps the scheduler's 32-step block schedule. Decoder steps are separate. The example explicitly sets the tested `cfg_rescale=0.5` instead of relying on the 0.7 default.
 
 This path accepts text-only input and PNG output. If `modalities` is supplied, it must contain both text and image. Source images, client-specified dimensions, unknown interleaved controls, and streaming are rejected. Frame dimensions come from generated image headers, which determine the required VQ-token count and CFG header. A completed frame must contain that exact VQ span followed by EOI; `image_max_new_tokens` remains an independent sampling upper bound, also limited by the available context.
 
@@ -78,16 +130,16 @@ Tracked in #2207; continues the work in #445.
 
 ## Validation
 
-The interleaved pipeline added in this PR completed the same three-frame request with both decoder backends on the server:
+Tested the usage example through `/v1/chat/completions` on this PR's interleaved pipeline, once per decoder backend, with the same full LLaDA2.0-Uni checkpoint and seed. Runs used BF16, TP1/SP1, an eager thinker with compilation disabled, and `torch_sdpa` decoder attention. The request used the default 32 image-VQ steps, made explicit in the example above.
 
 | Decoder | Result |
 | --- | --- |
-| Diffusers | **3/3 PNG frames**, 1344x768; HTTP 200 |
-| SGLang SP1 | **3/3 PNG frames**, 1344x768; HTTP 200 |
+| Diffusers | **3/3 PNG frames**, 1344x768; HTTP 200; shipwreck sample passed visual review |
+| SGLang SP1 | **3/3 PNG frames**, 1344x768; HTTP 200; shipwreck sample passed visual review |
 
-Both responses preserved ordered text/image segments and passed image-format, hash, and size checks. Generated images were retrieved and inspected. This validates generation and response handling, not prompt fidelity or cross-backend pixel equality.
+Images were retrieved for side-by-side inspection. Both responses preserved ordered text/image segments and passed PNG, hash, and byte-length checks. All three SGLang images matched the historical shipwreck sample pixel-for-pixel; the two backends produced visually similar results. This is a sample-level visual check, not a full quality benchmark or a claim of cross-backend pixel equality.
 
-Settings: BF16 LLaDA2.0-Uni, TP1 eager thinker, compilation disabled, identical prompt and seed 42, 32 dLLM steps, and 8 decoder-turbo steps. Focused LLaDA2-Uni regression: **54 passed, 1 skipped**.
+Focused LLaDA2-Uni regression: **54 passed, 1 skipped**.
 
 ## Contributors
 
