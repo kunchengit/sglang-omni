@@ -22,7 +22,7 @@ Add these options to the model launch command for TP2 with decode graphs and com
 --thinker.engine.enable_torch_compile false
 ```
 
-The thinker runs eagerly unless graphs are enabled. The cookbook's graph examples inherit `torch.compile=true`; the command above explicitly disables it to match the reported accuracy and performance runs. No compile-enabled accuracy or performance result is claimed here.
+The thinker runs eagerly unless graphs are enabled. The cookbook examples and reported accuracy/performance runs explicitly disable `torch.compile`, including when CUDA Graphs are enabled.
 
 Native SGLang routing is selected separately:
 
