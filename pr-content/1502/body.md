@@ -78,16 +78,16 @@ Tracked in #2207; continues the work in #445.
 
 ## Validation
 
-**1,366 regression tests passed, 2 skipped** at `09e7c75e`, covering frame collection, relay lifecycle, cancellation, and API boundaries. The rebase to `636ce7b6` did not change the tested interleaved runtime.
+The interleaved pipeline added in this PR completed the same three-frame request with both decoder backends on the server:
 
-Two separate full-checkpoint checks used this PR's branch:
+| Decoder | Result |
+| --- | --- |
+| Diffusers | **3/3 PNG frames**, 1344x768; HTTP 200 |
+| SGLang SP1 | **3/3 PNG frames**, 1344x768; HTTP 200 |
 
-| Revision | Decoder | Result |
-| --- | --- | --- |
-| `09e7c75e` | Diffusers (default) | Two 1024x1024 PNG frames; segment order, media metadata, and token accounting passed |
-| `636ce7b6` (September 27) | SGLang SP1 | Two PNG frames returned in ordered response segments |
+Both responses preserved ordered text/image segments and passed image-format, hash, and size checks. Generated images were retrieved and inspected. This validates generation and response handling, not prompt fidelity or cross-backend pixel equality.
 
-Both used 32 dLLM steps and seed 42. The SGLang check used a TP1 eager thinker with compilation disabled. These establish generation and response handling; no cross-backend pixel equivalence, interleaved quality score, or performance gain is claimed.
+Settings: BF16 LLaDA2.0-Uni, TP1 eager thinker, compilation disabled, identical prompt and seed 42, 32 dLLM steps, and 8 decoder-turbo steps. Focused LLaDA2-Uni regression: **54 passed, 1 skipped**.
 
 ## Contributors
 

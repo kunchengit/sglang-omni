@@ -6,7 +6,7 @@ Distribute LLaDA2-Uni image decoding across GPUs with SGLang Diffusion sequence 
 
 - Include generic stage-SP topology, placement, process launch, rank metadata, and lifecycle support.
 - Add the LLaDA2-Uni decoder policy for `sp_size`, `ulysses_degree`, and `ring_degree`, requiring `sp_size = ulysses_degree * ring_degree`.
-- Use the SGLang Z-Image backend for multi-rank decoding. Diffusers remains the default for SP1.
+- Use the SGLang Z-Image backend for multi-rank decoding; retain both inherited decoder backends for SP1.
 - Keep SigVQ conditioning and VAE decoding on the leader; synchronize request settings, conditioning, and seeds across ranks without emitting duplicate images.
 - Propagate preparation and worker failures to the coordinator. Stop the scheduler after unsynchronized compute failures to prevent mismatched collectives on later requests.
 - Shard padded noise-refiner and joint image-plus-conditioning sequences with matching position metadata, then gather in canonical global order, including non-square layouts.
@@ -38,13 +38,11 @@ Tracked in #2207; continues the work in #445.
 
 ## Validation
 
-- At `b29eb2fd`, **591 API/session regression tests passed** after rebase. The preceding `77b76e98` revision passed **1,458 tests, 5 skipped**; the decoder runtime was unchanged by the rebase.
-- Small-checkpoint GPU comparisons passed for SP1/Ulysses2 with SDPA and SP1/Ulysses2/Ring2 with FlashAttention. Four distributed failure-handling checks passed.
-- Nine full-checkpoint API cases passed at `77b76e98` on this decoder-SP branch, including an **SP1 thinking request**. That request is downstream regression coverage for #1500, not a test run on #1500's branch.
+Focused LLaDA2-Uni regression: **84 passed, 9 skipped**. Full-checkpoint validation below covers the decoder SP added in this PR; thinking and interleaved generation are inherited from #1500 and #1502.
 
 ## Accuracy
 
-Full-checkpoint results at `b29eb2fd` used BF16, a TP1 eager thinker with compilation disabled, and the SGLang decoder with `torch_sdpa`. The SP1 reference is #1499 at `36059f66`.
+Full-checkpoint results used BF16, a TP1 eager thinker with compilation disabled, and the SGLang decoder with `torch_sdpa`. The SP1 reference uses the image-generation pipeline from #1499.
 
 | Benchmark | SP1 | Ulysses SP2 | Output comparison |
 | --- | --- | --- | --- |
@@ -57,7 +55,7 @@ Pixel agreement applies to these benchmark settings. An earlier Turbo sample wit
 
 ## Performance
 
-Measured at `b29eb2fd` on H20-3e: BF16, TP1 eager thinker, compilation disabled, and SGLang SDPA decoding. SP1/SP2 ran sequentially on reserved GPUs with identical inputs and generation settings. Medians in seconds, after 3 warmups and 7 measured requests:
+Measured on this PR's decoder-SP implementation on H20-3e: BF16, TP1 eager thinker, compilation disabled, and SGLang SDPA decoding. SP1/SP2 ran sequentially on reserved GPUs with identical inputs and generation settings. Medians in seconds, after 3 warmups and 7 measured requests:
 
 | Task | Decoder SP1 | Decoder SP2 | Speedup | HTTP E2E SP1 | HTTP E2E SP2 | Speedup |
 | --- | --- | --- | --- | --- | --- | --- |

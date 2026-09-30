@@ -47,10 +47,10 @@ Tracked in #2207; continues the work in #445.
 
 ## Validation
 
-- **This PR, `9cc17c25`:** a full-checkpoint thinking T2I request completed with the SGLang SP1 decoder, returning thinking text and one PNG. The saved image was visually inspected. The thinker used TP1 eager execution with compilation disabled.
-- **This PR before rebase, `ce5d2f45`:** **143 tests passed, 0 skipped**, covering phase transitions, CFG, token accounting, and normal-mode regression. The rebase did not change the tested thinking runtime.
+- The two-pass thinking pipeline was tested on **this PR's branch** with the SGLang SP1 decoder, returning thinking text and one PNG. The image was visually inspected. The thinker used TP1 eager execution with compilation disabled.
+- Focused LLaDA2-Uni regression: **44 passed, 1 skipped**, including phase-transition and usage-accounting coverage.
 
-The SP1 thinking request reported in #1501 is a separate downstream regression, not the source of the result above. No thinking-mode quality score or performance gain is claimed; #1499's GenEval/ImgEdit scores cover normal mode.
+Thinking generation is introduced here; decoder SP is added separately in #1501. No thinking-mode quality score or performance gain is claimed; #1499's GenEval/ImgEdit scores cover normal mode.
 
 ## Contributors
 

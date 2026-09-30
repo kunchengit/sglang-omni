@@ -6,7 +6,7 @@ Add non-thinking text-to-image generation and single-image editing to LLaDA2-Uni
 
 - Add image-generation preprocessing, exact image-token budgets, task routing, and the image-decoding terminal stage.
 - Add native `/v1/images/generations` and `/v1/images/edits` endpoints on image-capable pipelines, while retaining the chat-completions image entry point.
-- Support Diffusers and SGLang decoder backends. Diffusers is the default; `factory.backend="sglang"` selects the alternative explicitly.
+- Support Diffusers and SGLang decoder backends, selected through `factory.backend`.
 - Support `normal` and `decoder-turbo` decoding, with per-request decoder steps and seed.
 - Preprocess raw edit images on the server using an aspect-ratio-compatible crop grid, resize, and center crop. Understanding preprocessing remains separate.
 - Add API, preprocessing, decoder, routing, and error-path tests, including invalid image controls and context-budget errors.
@@ -70,16 +70,19 @@ Tracked in #2207; continues the work in #445.
 
 ## Validation
 
-At `36059f66`, full-checkpoint evaluation used a BF16 LLaDA2.0-Uni model, TP1 eager thinker, and SGLang SP1 decoder with `torch_sdpa` and compilation disabled.
+The image-generation pipeline added in this PR was evaluated with BF16 LLaDA2.0-Uni, a TP1 eager thinker, and SGLang SP1 decoding with `torch_sdpa` and compilation disabled.
 
 | Benchmark | Result |
 | --- | --- |
 | GenEval | **0.88993** task-macro score; **494/553** cases correct |
 | Original-image ImgEdit | **3.52307** mean judge score; **737/737** completed without judge errors |
+| Precomputed `.pt` ImgEdit (earlier revision) | **3.65016** mean judge score; **737/737** completed without judge errors |
 
 Both use seed 42, CFG rescale 0.7, and 8 decoder-turbo steps. T2I uses 1024x1024, CFG 4.0, and 32 dLLM steps; edit uses text/image CFG 4.0/0.0 and 8 dLLM steps. Edit inputs are original images, with server-side resize/crop.
 
-The preceding revision `e22e38ae` passed **139 tests, 0 skipped**, including a small-checkpoint GPU comparison of SGLang SP1 and Diffusers. The intervening rebase did not change the tested image runtime. Full-checkpoint scores above cover SGLang only; they do not establish decoder-backend quality parity.
+The `.pt` result is a separate regression using a repository-external adapter to supply precomputed source tokens; it is not a public input API. It used an earlier image-generation revision and did not fix the seed, so its difference from the original-image score is not an isolated preprocessing comparison.
+
+Focused LLaDA2-Uni regression: **39 passed, 1 skipped**. Full-checkpoint scores above cover SGLang decoding; three-frame generation with both decoder backends is verified separately in #1502.
 
 ## Contributors
 

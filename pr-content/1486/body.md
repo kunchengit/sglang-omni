@@ -22,7 +22,7 @@ Add these options to the model launch command for TP2 with decode graphs and com
 --thinker.engine.enable_torch_compile false
 ```
 
-The thinker runs eagerly unless graphs are enabled. The cookbook's graph examples inherit `torch.compile=true`; the command above explicitly disables it to match the reported accuracy and performance runs. Compile-enabled execution passed generation checks, but has no full-dataset accuracy or latency result here.
+The thinker runs eagerly unless graphs are enabled. The cookbook's graph examples inherit `torch.compile=true`; the command above explicitly disables it to match the reported accuracy and performance runs. No compile-enabled accuracy or performance result is claimed here.
 
 Native SGLang routing is selected separately:
 
@@ -42,13 +42,12 @@ Replace the repository path; point above `configs/`. Omit this setting for other
 
 ## Validation
 
-- Routing selector (`c1b8b039`): 9 precision tests passed; six TP2 T2I/edit/MMMU requests reproduced each route's reference outputs with compilation disabled.
-- TP/graph implementation (`7905d462`): 1,388 regression tests passed, 2 skipped; all 18 generation cases passed. Eager and non-compiled graphs matched within each TP size. Compilation and TP size can change outputs.
-- Native-routing benchmark (`b142ecd0`, TP2, graphs on, compile off): GenEval macro score **0.88023** (487/553 correct); original-image ImgEdit **3.54093** (737/737 completed). These are not full-dataset results for the default Torch route.
+- Thinker TP regression: **69 passed, 1 skipped**. The routing selector added in this PR passed 9 focused precision tests and six real TP2 T2I/edit/MMMU output checks.
+- With native SGLang routing, TP2, graphs on, and compile off: GenEval macro score **0.88023** (487/553 correct); original-image ImgEdit **3.54093** (737/737 completed). These are not full-dataset results for the default Torch route.
 
 ## Performance
 
-Measured at `b142ecd0` on H20-3e with BF16, **native SGLang TopK**, decode graphs enabled, and compilation disabled. Both deployments use the same checkpoint, prompt/source image, seed, and generation settings. The decoder remains SP1 on a separate GPU with `torch_sdpa`.
+Measured on this PR's thinker TP implementation on H20-3e with BF16, **native SGLang TopK**, decode graphs enabled, and compilation disabled. Both deployments use the same checkpoint, prompt/source image, seed, and generation settings. The decoder remains SP1 on a separate GPU with `torch_sdpa`.
 
 Sequential runs on reserved GPUs; 3 warmups and 7 measured requests per case. Values are median seconds.
 
@@ -72,3 +71,4 @@ Tracked in #2207; continues #445.
 - @kunchengit
 - @btw616
 - @LiRongchuan
+- @Anmuliar
