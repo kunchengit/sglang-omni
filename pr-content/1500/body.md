@@ -6,10 +6,9 @@ Add thinking-mode text-to-image generation on top of #1499. The thinker first pr
 
 - Accept `image_generation.mode="thinking"` for T2I; thinking-mode editing is unsupported.
 - Run the first pass with a fixed 2048-token budget and `<boi>` as a stop token, without image-vocabulary constraints or CFG.
-- Build the second-pass prompt from the original input and generated tokens through the first `<boi>`; validate the context budget and CFG inputs before committing the transition.
-- Re-enter the thinker to generate the requested image-token grid, then use the decoder inherited from #1499.
-- Retain the generated thinking text for text output and account for both generation passes as completion tokens, without reclassifying the thinking prefix as user input.
-- Extend phase-transition, CFG, routing, state-transfer, usage, and non-thinking regression coverage.
+- Build the second-pass prompt through the first `<boi>`, then generate the requested image-token grid with CFG and decode it through #1499's backend.
+- Return the thinking text when requested and count both passes as completion tokens.
+- Add phase-transition, CFG, usage, and normal-mode regression tests.
 
 ## Usage
 
@@ -48,15 +47,10 @@ Tracked in #2207; continues the work in #445.
 
 ## Validation
 
-Candidate revision: `9cc17c25f10025f37432a03d83b5fabdf165bd17`, based on `main` at `7dc8909e` and #1499. The suites below ran on `ce5d2f45`, before a realtime-transcription-only rebase; the contribution, model runtime, image APIs, and dependencies are unchanged.
+- **This PR, `9cc17c25`:** a full-checkpoint thinking T2I request completed with the SGLang SP1 decoder, returning thinking text and one PNG. The saved image was visually inspected. The thinker used TP1 eager execution with compilation disabled.
+- **This PR before rebase, `ce5d2f45`:** **143 tests passed, 0 skipped**, covering phase transitions, CFG, token accounting, and normal-mode regression. The rebase did not change the tested thinking runtime.
 
-- Image API, LLaDA2-Uni, and dLLM scheduler suites: **143 passed, 0 skipped**, including the inherited small-checkpoint GPU decoder comparison.
-- Coverage includes the first-BOI boundary, missing-boundary errors, CFG enabled/disabled, state round trips, original prompt versus two-pass completion accounting, and normal-mode regression tests.
-- Environment: Linux, NVIDIA H20-3e, SGLang 0.5.20, Diffusers 0.37.0, PyTorch 2.13.0+cu130, Transformers 5.12.1, and Triton 3.7.1. Applicable formatting and static checks passed.
-
-Reference-control-flow checks and small-checkpoint tests do not establish full-model image-quality parity. No performance improvement is claimed here.
-
-The September 27 full-checkpoint review also exercised a thinking T2I request through the SGLang decoder and visually inspected the returned image. This is a single-sample generation check, not a thinking-mode quality benchmark; the full GenEval/ImgEdit scores reported in #1499 exercise normal mode.
+The SP1 thinking request reported in #1501 is a separate downstream regression, not the source of the result above. No thinking-mode quality score or performance gain is claimed; #1499's GenEval/ImgEdit scores cover normal mode.
 
 ## Contributors
 

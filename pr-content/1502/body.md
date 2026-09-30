@@ -78,16 +78,16 @@ Tracked in #2207; continues the work in #445.
 
 ## Validation
 
-Candidate revision: `636ce7b632b220f478401803cf5894e941df9608`, based on `main` at `7dc8909e` and #1500. The regression suite and default-step protocol smoke below ran on `09e7c75e`, before a realtime-transcription-only rebase; the contribution, model runtime, image APIs, and dependencies are unchanged. The reduced-step observation predates that regression run.
+**1,366 regression tests passed, 2 skipped** at `09e7c75e`, covering frame collection, relay lifecycle, cancellation, and API boundaries. The rebase to `636ce7b6` did not change the tested interleaved runtime.
 
-- Related unit/regression suites: **1366 passed, 2 skipped**. The skips are engine-contract checks in configurations without an SGLang engine. Coverage includes self-routing, concurrent frame collection, cancellation, late-preparation cleanup, session admission, and image/API boundaries. Applicable formatting and static checks passed.
-- A full-checkpoint request at the default 32 dLLM steps returned exactly two 1024×1024 PNG frames. The check verified contiguous segment indices, a shared session ID, segment/media types, PNG hashes and byte lengths, concatenated text, and token accounting. Requests completed without leftover pending work.
-- The same sample at 16 dLLM steps failed strict frame validation because the image phase exhausted its sampling budget without EOI. Restoring the default 32 steps produced the required VQ span and EOI in each frame. Rejecting an invalid model-generated frame is intentional; the implementation does not insert EOI or truncate excess tokens. Lower-step output robustness is not established.
-- Environment: Linux, NVIDIA H20-3e, SGLang 0.5.20, Diffusers 0.37.0, PyTorch 2.13.0+cu130, Transformers 5.12.1, and Triton 3.7.1. The multi-frame smoke used the default Diffusers decoder, seed 42 and 5 decoder steps.
+Two separate full-checkpoint checks used this PR's branch:
 
-These are lifecycle, protocol, and representative generation checks, not a multi-frame quality or performance benchmark. No throughput or latency improvement is claimed here.
+| Revision | Decoder | Result |
+| --- | --- | --- |
+| `09e7c75e` | Diffusers (default) | Two 1024x1024 PNG frames; segment order, media metadata, and token accounting passed |
+| `636ce7b6` (September 27) | SGLang SP1 | Two PNG frames returned in ordered response segments |
 
-The September 27 SGLang-decoder review returned two image frames through the interleaved response path.
+Both used 32 dLLM steps and seed 42. The SGLang check used a TP1 eager thinker with compilation disabled. These establish generation and response handling; no cross-backend pixel equivalence, interleaved quality score, or performance gain is claimed.
 
 ## Contributors
 

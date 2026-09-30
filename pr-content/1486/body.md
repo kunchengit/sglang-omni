@@ -22,7 +22,9 @@ Add these options to the model launch command for TP2 with decode graphs and com
 --thinker.engine.enable_torch_compile false
 ```
 
-The thinker runs eagerly unless graphs are enabled. Native SGLang routing is selected separately:
+The thinker runs eagerly unless graphs are enabled. The cookbook's graph examples inherit `torch.compile=true`; the command above explicitly disables it to match the reported accuracy and performance runs. Compile-enabled execution passed generation checks, but has no full-dataset accuracy or latency result here.
+
+Native SGLang routing is selected separately:
 
 ```bash
 --thinker.engine.json_model_override_args '{"llada2_uni_topk_backend":"sglang"}'
@@ -40,9 +42,9 @@ Replace the repository path; point above `configs/`. Omit this setting for other
 
 ## Validation
 
-- At `c1b8b039`, 9 focused precision tests passed. Six real TP2 requests (T2I, edit, and MMMU for each routing option) reproduced the corresponding reference outputs exactly.
-- The earlier `7905d462` matrix passed 18 image requests across TP1/TP2 and eager/graph/graph-with-compilation modes. Eager and non-compiled graphs produced identical PNGs within each TP size; TP size and compilation can change outputs. Related regression suites passed 1,388 tests with 2 skips.
-- At `b142ecd0`, native-routing TP2 completed GenEval (macro score 0.88023, 487/553 cases correct) and original-image ImgEdit (3.54093, 737/737 completed without judge errors). These pre-selector results are not a full-dataset evaluation of the default Torch route.
+- Routing selector (`c1b8b039`): 9 precision tests passed; six TP2 T2I/edit/MMMU requests reproduced each route's reference outputs with compilation disabled.
+- TP/graph implementation (`7905d462`): 1,388 regression tests passed, 2 skipped; all 18 generation cases passed. Eager and non-compiled graphs matched within each TP size. Compilation and TP size can change outputs.
+- Native-routing benchmark (`b142ecd0`, TP2, graphs on, compile off): GenEval macro score **0.88023** (487/553 correct); original-image ImgEdit **3.54093** (737/737 completed). These are not full-dataset results for the default Torch route.
 
 ## Performance
 

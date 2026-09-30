@@ -70,20 +70,16 @@ Tracked in #2207; continues the work in #445.
 
 ## Validation
 
-Candidate revision: `36059f66c45c9afbef69a0ddcfcd279a05ac75ad`, based on `main` at `7dc8909e` and #2257. The suites below ran on `e22e38ae`, before a realtime-transcription-only rebase; the contribution, model runtime, image APIs, and dependencies are unchanged.
+At `36059f66`, full-checkpoint evaluation used a BF16 LLaDA2.0-Uni model, TP1 eager thinker, and SGLang SP1 decoder with `torch_sdpa` and compilation disabled.
 
-- Image API, LLaDA2-Uni, and dLLM scheduler suites: **139 passed, 0 skipped**.
-- The opt-in GPU test ran the SGLang SP1 decoder against Diffusers using a small synthetic checkpoint. This is backend numerical coverage, not a full-checkpoint image-quality evaluation.
-- Regression coverage includes generation/edit request-budget errors returning 400, runtime failures returning 500, and text-only application startup without importing optional image schemas.
-- Environment: Linux, NVIDIA H20-3e, SGLang 0.5.20, Diffusers 0.37.0, PyTorch 2.13.0+cu130, Transformers 5.12.1, and Triton 3.7.1. Applicable formatting and static checks passed.
+| Benchmark | Result |
+| --- | --- |
+| GenEval | **0.88993** task-macro score; **494/553** cases correct |
+| Original-image ImgEdit | **3.52307** mean judge score; **737/737** completed without judge errors |
 
-### Full-checkpoint accuracy (2026-09-28)
+Both use seed 42, CFG rescale 0.7, and 8 decoder-turbo steps. T2I uses 1024x1024, CFG 4.0, and 32 dLLM steps; edit uses text/image CFG 4.0/0.0 and 8 dLLM steps. Edit inputs are original images, with server-side resize/crop.
 
-At `36059f66`, the full GenEval run completed 553/553 requests and achieved a **task-macro score of 0.88993**, with **494/553 individual cases correct (89.33%)**. The task-macro score weights the six task categories equally; individual accuracy weights examples equally.
-
-The run used BF16 LLaDA2.0-Uni on H20-3e, TP1 eager execution, and the SGLang SP1 decoder with `torch_sdpa`. Native T2I requests used 1024x1024 output, CFG 4.0, CFG rescale 0.7, seed 42, 32 dLLM steps, and 8 decoder-turbo steps.
-
-Full original-image ImgEdit completed **737/737** requests. The official local ImgEdit judge reported a sample mean of **3.52307**, with zero parsing or inference errors. Native edit requests used text CFG 4.0, image CFG 0.0, CFG rescale 0.7, seed 42, 8 dLLM steps and 8 decoder-turbo steps. Precomputed `.pt` inputs were not used. These results do not establish Diffusers/SGLang quality parity or a latency/throughput improvement.
+The preceding revision `e22e38ae` passed **139 tests, 0 skipped**, including a small-checkpoint GPU comparison of SGLang SP1 and Diffusers. The intervening rebase did not change the tested image runtime. Full-checkpoint scores above cover SGLang only; they do not establish decoder-backend quality parity.
 
 ## Contributors
 
