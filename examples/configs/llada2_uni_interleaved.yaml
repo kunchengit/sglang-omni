@@ -3,3 +3,7 @@
 config_cls: LLaDA2UniInterleavedPipelineConfig
 name: llada2-uni-interleaved
 model_path: inclusionAI/LLaDA2.0-Uni
+stages:
+  thinker:
+    engine:
+      enable_torch_compile: false
