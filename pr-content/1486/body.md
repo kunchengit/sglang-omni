@@ -30,7 +30,7 @@ Native SGLang routing is selected separately:
 --thinker.engine.json_model_override_args '{"llada2_uni_topk_backend":"sglang"}'
 ```
 
-The default is `torch`. See #2257 for the MMMU routing ablation and its numerical implications.
+The default retains the reference Torch routing from #2257. Native SGLang TopK is opt-in; see the [routing comparison](#routing-comparison) below for its numerical and accuracy implications.
 
 For the supplied BF16 H20-3e TP2 tuning configurations (SGLang 0.5.20 / Triton 3.7.1):
 
@@ -42,8 +42,26 @@ Replace the repository path; point above `configs/`. Omit this setting for other
 
 ## Validation
 
-- Thinker TP regression: **69 passed, 1 skipped**. The routing selector added in this PR passed 9 focused precision tests and six real TP2 T2I/edit/MMMU output checks.
+- Thinker TP regression: **69 passed, 1 skipped**. The routing selector added in this PR passed 9 focused precision tests.
+- With TP2, decode graphs enabled and compilation disabled, default Torch routing and the explicit SGLang override each completed one T2I, one original-image edit and one MMMU request. All six outputs matched their respective routing baselines. These are startup/output-regression checks, not full-dataset quality evaluations.
 - With native SGLang routing, TP2, graphs on, and compile off: GenEval macro score **0.88023** (487/553 correct); original-image ImgEdit **3.54093** (737/737 completed). These are not full-dataset results for the default Torch route.
+
+### Routing comparison
+
+A routing-only comparison evaluated native SGLang TopK at `b142ecd0` against its reference-Torch variant `d88f7c2e`, retaining the same TP implementation and FP32 expert-output reduction. Both used the same checkpoint and 1,050 MMMU requests on H20-3e, BF16, `torch_sdpa`, decode graphs enabled, compilation disabled, temperature 0 and `max_tokens=2048`. Scoring used the same VLMEvalKit API judge (`doubao-seed-2-0-lite-260428`).
+
+| Routing | Thinker | All questions | Validation split |
+| --- | --- | --- | --- |
+| Reference Torch | TP1 | 517/1,050 | 438/900 |
+| Native SGLang TopK | TP1 | 500/1,050 | 427/900 |
+| Reference Torch | TP2 | 517/1,050 | 452/900 |
+| Native SGLang TopK | TP2 | 494/1,050 | 426/900 |
+
+Reference Torch TP1 reproduced all answer texts from #2257; separate API judgments explain the score difference. Captured-input diagnostics found differences in expert ordering and weights despite identical router logits, so the implementations should not be assumed numerically interchangeable.
+
+These are single-run API-judge results, including fallback judgments. Neither paired routing comparison reached the 0.05 significance threshold (TP1: p=0.314; TP2: p=0.170), and equal TP1/TP2 totals do not imply identical answers. They do not establish a universal accuracy regression from SGLang routing. Torch remains the default to preserve reference routing behavior; native TopK is an explicit performance option.
+
+The full-dataset comparison predates the startup selector and is not a fresh evaluation of the current PR head. The selector checks above verify startup and output regression separately.
 
 ## Performance
 
@@ -59,6 +77,17 @@ Sequential runs on reserved GPUs; 3 warmups and 7 measured requests per case. Va
 Settings: seed 42, CFG rescale 0.7, 32 dLLM steps, and 8 decoder-turbo steps. T2I uses CFG 4.0 at 1024x1024; edit uses text CFG 4.0 and image CFG 1.5, with dimensions derived from the source.
 
 HTTP timing excludes client image saving. Thinker timings come from a separate stage-event run without Torch profiler. TP2 loads the supplied MoE tuning configurations; TP1 uses the installed configuration root. These results measure those deployments, not the default Torch route or the isolated benefit of tuning.
+
+### TP2 routing latency
+
+The routing variants above were also compared sequentially at TP2 using the image workloads and timing procedure in this section. Both used the same GPUs, checkpoint, generation settings and H20 TP2 MoE tuning configurations, with decode graphs enabled and compilation disabled. The decoder remained SP1 on a separate GPU.
+
+| Task | Reference Torch HTTP E2E (s) | Native SGLang TopK HTTP E2E (s) |
+| --- | --- | --- |
+| T2I | 14.918 | 14.070 |
+| Edit | 12.052 | 11.715 |
+
+This separate comparison measures routing-dependent end-to-end latency for these workloads, not router-kernel throughput or a general speed/quality guarantee.
 
 ## Dependencies
 
