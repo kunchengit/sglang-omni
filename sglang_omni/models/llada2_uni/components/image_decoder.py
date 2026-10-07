@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -361,7 +360,7 @@ class LLaDA2ImageDecoder:
         h: int,
         w: int,
         format: str = "PNG",
-        **decode_kwargs: Any,
+        **decode_kwargs: str | int | None,
     ) -> bytes:
         """Decode VQ token IDs into image bytes.
 

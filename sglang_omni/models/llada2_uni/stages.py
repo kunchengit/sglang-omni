@@ -246,7 +246,7 @@ def create_image_decode_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    dtype: Any = None,
+    dtype: str | torch.dtype | None = None,
     decode_mode: str = "normal",
     num_steps: int = 50,
     resolution_multiplier: int = 2,

@@ -16,7 +16,7 @@ from starlette.datastructures import UploadFile
 
 from sglang_omni.client.client import Client
 from sglang_omni.client.types import GenerateRequest, Message, SamplingParams
-from sglang_omni.serve.openai_errors import is_bad_request_error
+from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import ImageGenerationParams
 
 logger = logging.getLogger(__name__)
@@ -145,11 +145,12 @@ def register_images(app: FastAPI) -> None:
         try:
             result = await client.completion(generation, request_id=request_id)
         except Exception as exc:
-            if is_bad_request_error(exc):
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            status_code = generation_error_status_code(exc)
+            if status_code == 500:
+                logger.exception("Error generating image for request %s", request_id)
             else:
-                logger.exception(f"Error generating image for request {request_id}")
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
+                pass
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
         if result.image is None:
             raise HTTPException(status_code=500, detail="Pipeline returned no image")
         else:
