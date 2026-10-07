@@ -79,6 +79,10 @@ from sglang_omni.http.admin_auth import (
 )
 from sglang_omni.http.favicon import register_favicon
 from sglang_omni.proto.admin import AdminResponse
+from sglang_omni.proto.segments import (
+    InterleavedGenerationParams,
+    validate_interleaved_inputs,
+)
 from sglang_omni.serve.diarizations import register_diarizations
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
@@ -100,7 +104,6 @@ from sglang_omni.serve.protocol import (
     GenerateResponse,
     ImageGenerationParams,
     InitWeightsUpdateGroupRequest,
-    InterleavedGenerationParams,
     ModelCard,
     ModelList,
     PauseGenerationRequest,
@@ -112,7 +115,6 @@ from sglang_omni.serve.protocol import (
     UsageResponse,
     VoiceListResponse,
     WeightsCheckerRequest,
-    validate_interleaved_inputs,
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.realtime.schema import CapabilityResponse
