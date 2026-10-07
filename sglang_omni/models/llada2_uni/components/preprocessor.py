@@ -10,6 +10,7 @@ from pathlib import Path
 
 import torch
 from PIL import Image, ImageOps
+from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.llada2_uni.components.common import (
     load_llada2_tokenizer,
@@ -60,7 +61,7 @@ logger = logging.getLogger(__name__)
 
 
 def align_cfg_unconditional_input_ids(
-    tokenizer: Any,
+    tokenizer: PreTrainedTokenizerBase,
     conditional_input_ids: list[int],
     unconditional_input_ids: list[int],
 ) -> tuple[list[int], int]:
@@ -417,7 +418,7 @@ class LLaDA2Preprocessor:
         else:
             pass
 
-        stream_state: dict[str, Any] = {}
+        stream_state: dict[str, object] = {}
         max_new_tokens = request.params.get(
             "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
         )
@@ -609,7 +610,7 @@ class LLaDA2Preprocessor:
         )
 
     @staticmethod
-    def extract_user_prompt_text(messages: list[dict[str, Any]]) -> str:
+    def extract_user_prompt_text(messages: Sequence[Mapping[str, object]]) -> str:
         for msg in reversed(messages):
             if msg.get("role", "user") != "user":
                 continue
@@ -633,7 +634,7 @@ class LLaDA2Preprocessor:
         return ""
 
     @classmethod
-    def require_edit_instruction(cls, messages: list[dict[str, Any]]) -> str:
+    def require_edit_instruction(cls, messages: Sequence[Mapping[str, object]]) -> str:
         instruction = cls.extract_user_prompt_text(messages)
         if not instruction.strip():
             raise ValueError("Image editing requires a non-empty instruction")
@@ -643,7 +644,7 @@ class LLaDA2Preprocessor:
 
     def set_cfg_branch(
         self,
-        stream_state: dict[str, Any],
+        stream_state: dict[str, object],
         conditional: list[int],
         unconditional: list[int],
         *,
@@ -658,9 +659,9 @@ class LLaDA2Preprocessor:
     def build_edit_payload(
         self,
         payload: StagePayload,
-        messages: list[dict[str, Any]],
+        messages: Sequence[Mapping[str, object]],
         images: list[Image.Image],
-        request_metadata: dict[str, Any],
+        request_metadata: dict[str, object],
     ) -> StagePayload:
         instruction = self.require_edit_instruction(messages)
         if len(images) != 1:
@@ -709,7 +710,7 @@ class LLaDA2Preprocessor:
             request_id=payload.request_id,
         )
         ig = request_metadata["image_generation"]
-        stream_state: dict[str, Any] = {
+        stream_state: dict[str, object] = {
             "image_info": [{"grid_h": grid_h, "grid_w": grid_w}],
         }
         if ig.get("dllm_steps") is not None:

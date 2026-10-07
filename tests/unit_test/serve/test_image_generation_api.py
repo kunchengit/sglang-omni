@@ -378,6 +378,7 @@ def test_native_image_rejects_unsupported_controls_and_multiple_sources(api):
         ("Requested token count exceeds the model's maximum context length", 400),
         ("Request requires more tokens than the thinker KV cache can hold", 400),
         ("Image decoder failed", 500),
+        (QueueFullError.MESSAGE, 503),
     ],
 )
 def test_native_image_pipeline_errors(
