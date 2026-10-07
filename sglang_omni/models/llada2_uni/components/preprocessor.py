@@ -34,7 +34,7 @@ from sglang_omni.preprocessing.image import (
     ensure_image_list_async,
 )
 from sglang_omni.proto import StagePayload
-from sglang_omni.serve.protocol import (
+from sglang_omni.proto.segments import (
     InterleavedGenerationParams,
     validate_interleaved_inputs,
 )

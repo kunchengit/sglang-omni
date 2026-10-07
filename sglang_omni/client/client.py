@@ -38,17 +38,17 @@ from sglang_omni.pipeline.coordinator import Coordinator, CoordinatorHealth
 from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
 from sglang_omni.proto.admin import AdminResponse
 from sglang_omni.proto.request import EXPLICIT_STAGE_SAMPLING_PARAMS_KEY
-from sglang_omni.proto.segments import UMMSegment
+from sglang_omni.proto.segments import (
+    InterleavedGenerationParams,
+    UMMSegment,
+    normalize_interleaved_content,
+    validate_interleaved_inputs,
+)
 from sglang_omni.proto.session import (
     OutputChunk,
     SessionIdentity,
     SessionLimits,
     TimedChunk,
-)
-from sglang_omni.serve.protocol import (
-    InterleavedGenerationParams,
-    normalize_interleaved_content,
-    validate_interleaved_inputs,
 )
 
 

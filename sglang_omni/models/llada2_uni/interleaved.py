@@ -21,8 +21,8 @@ from sglang_omni.models.llada2_uni.config import (
 )
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.proto import StagePayload
+from sglang_omni.proto.segments import InterleavedGenerationParams
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
-from sglang_omni.serve.protocol import InterleavedGenerationParams
 
 SYSTEM_PROMPT_INTERLEAVED = "You are a interleaved generation assistant."
 UNCONDITION_TOKEN = "<uncondition>"

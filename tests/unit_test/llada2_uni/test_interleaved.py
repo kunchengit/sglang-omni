@@ -22,7 +22,7 @@ from sglang_omni.models.llada2_uni.interleaved import (
 from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.serve.protocol import normalize_interleaved_content
+from sglang_omni.proto.segments import normalize_interleaved_content
 
 
 class Tokenizer:
@@ -234,7 +234,9 @@ def test_image_request_uses_current_cfg_and_eoi_only_stopping():
         params={"stop": ["stop"], "stop_token_ids": [666]},
         tokenizer=Tokenizer(),
         vocab_size=IMAGE_TOKEN_OFFSET + 16,
-        dllm_config=SimpleNamespace(block_size=4, mask_id=99),
+        dllm_config=SimpleNamespace(
+            block_size=4, mask_id=99, requires_separate_context_encoding=False
+        ),
         request_id="story",
     ).req
     assert req.tokenizer is None and req.eos_token_ids == {11}
@@ -255,7 +257,9 @@ def test_image_request_uses_current_cfg_and_eoi_only_stopping():
         params={},
         tokenizer=Tokenizer(),
         vocab_size=IMAGE_TOKEN_OFFSET + 16,
-        dllm_config=SimpleNamespace(block_size=4, mask_id=99),
+        dllm_config=SimpleNamespace(
+            block_size=4, mask_id=99, requires_separate_context_encoding=False
+        ),
         request_id="story",
     ).req
     assert req.sampling_params.max_new_tokens == 1498
