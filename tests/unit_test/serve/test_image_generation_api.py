@@ -169,6 +169,7 @@ def test_image_config_and_modalities_reach_omni_request(modalities, image_config
 
 
 def test_all_image_controls_preserve_explicit_values():
+    messages = [{"role": "user", "content": "Draw a square"}]
     config = {
         "mode": "normal",
         "decode_mode": "decoder-turbo",
@@ -182,13 +183,17 @@ def test_all_image_controls_preserve_explicit_values():
         "image_w": 1024,
         "dllm_steps": 1,
     }
-    req = ChatCompletionRequest(messages=[], image_generation=config)
+    req = ChatCompletionRequest(messages=messages, image_generation=config)
     assert build_chat_generate_request(req).metadata["image_generation"] == config
-    req = ChatCompletionRequest(messages=[], image_generation={"cfg_text_scale": None})
+    req = ChatCompletionRequest(
+        messages=messages, image_generation={"cfg_text_scale": None}
+    )
     assert build_chat_generate_request(req).metadata["image_generation"] == {}
     assert (
         "image_generation"
-        not in build_chat_generate_request(ChatCompletionRequest(messages=[])).metadata
+        not in build_chat_generate_request(
+            ChatCompletionRequest(messages=messages)
+        ).metadata
     )
 
 
