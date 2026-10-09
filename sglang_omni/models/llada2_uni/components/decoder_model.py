@@ -93,35 +93,13 @@ class ZImageTransformer2DModelWrapper(nn.Module):
         runtime: DecoderRuntimeHandle | None = None,
     ) -> None:
         super().__init__()
-        if backend not in {"diffusers", "sglang"}:
-            raise ValueError(f"Unsupported image decoder backend: {backend!r}")
-        else:
-            pass
         self.backend = backend
         self.cfg = decoder_config(cfg)
         self.native_cache = None
         if backend == "sglang":
-            if runtime is None:
-                raise ValueError("sglang decoder requires an initialized runtime")
-            else:
-                pass
             self.runtime = runtime
-            self.runtime.validate()
-            requested_device = torch.device(device)
-            if requested_device.type == "cuda" and requested_device.index is None:
-                requested_device = torch.device("cuda", torch.cuda.current_device())
-            else:
-                pass
-            if self.runtime.dtype != dtype or self.runtime.device != requested_device:
-                raise ValueError("Decoder model and runtime device/dtype must match")
-            else:
-                pass
             self.model = self.load_sglang_model(decoder_dir, self.runtime.device, dtype)
             return
-        else:
-            pass
-        if runtime is not None:
-            raise ValueError("diffusers decoder cannot use a native parallel runtime")
         else:
             pass
         from diffusers.models.transformers.transformer_z_image import (
@@ -223,7 +201,6 @@ class ZImageTransformer2DModelWrapper(nn.Module):
         )
         spatial = self.spatial_config
         if self.native_cache is None or self.native_cache[0] != key:
-            self.runtime.validate()
             if any(image.shape != x[0].shape for image in x) or any(
                 cap.shape != cap_feats[0].shape for cap in cap_feats
             ):
@@ -245,7 +222,6 @@ class ZImageTransformer2DModelWrapper(nn.Module):
                 prompt_embeds=[cap_feats],
                 prompt_seq_lens=[[cap.shape[0] for cap in cap_feats]],
             )
-            local, _ = spatial.shard_latents_for_sp(batch, full)
             cond = spatial.prepare_pos_cond_kwargs(
                 batch, full.device, self.model.rotary_emb, full.dtype
             )
@@ -281,12 +257,6 @@ class ZImageTransformer2DModelWrapper(nn.Module):
                 f_patch_size=f_patch_size,
                 **cond,
             )
-        if not isinstance(prediction, torch.Tensor) or prediction.shape != local.shape:
-            raise RuntimeError(
-                "Native decoder must return the local [B, C, F, H, W] shape"
-            )
-        else:
-            pass
         # Native forward returns -velocity. SP1 gather is an identity operation.
         return list((-spatial.gather_noise_pred_for_sp(batch, prediction)).unbind(0))
 
@@ -299,49 +269,7 @@ class ZImageTransformer2DModelWrapper(nn.Module):
         patch_size: int = 2,
         f_patch_size: int = 1,
     ):
-        if not x or len(x) != len(cap_feats):
-            raise ValueError(
-                "Decoder requires one semantic feature sequence per latent"
-            )
-        else:
-            pass
-        if (patch_size, f_patch_size) not in set(
-            zip(self.cfg["all_patch_size"], self.cfg["all_f_patch_size"])
-        ):
-            raise ValueError("Unsupported decoder patch-size pair")
-        else:
-            pass
-        for latent, cap in zip(x, cap_feats):
-            if latent.ndim != 4 or latent.shape[0] != self.cfg["in_channels"]:
-                raise ValueError("Decoder latents must have shape [C, F, H, W]")
-            else:
-                pass
-            if any(
-                size < 1 or size % patch
-                for size, patch in zip(
-                    latent.shape[1:], (f_patch_size, patch_size, patch_size)
-                )
-            ):
-                raise ValueError(
-                    "Decoder latent dimensions must be divisible by patch sizes"
-                )
-            else:
-                pass
-            if (
-                cap.ndim != 2
-                or cap.shape[0] < 1
-                or cap.shape[1] != self.cfg["cap_feat_dim"]
-            ):
-                raise ValueError(
-                    "Decoder semantic features must have shape [L, cap_feat_dim]"
-                )
-            else:
-                pass
         t = torch.as_tensor(t, dtype=torch.float32, device=x[0].device)
-        if t.ndim > 1 or t.numel() not in {1, len(x)}:
-            raise ValueError("Decoder timestep must be a scalar or batch vector")
-        else:
-            pass
         t = t.reshape(-1).expand(len(x))
         if self.backend == "sglang":
             outputs = self.native_forward(x, t, cap_feats, patch_size, f_patch_size)

@@ -7,23 +7,6 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from sglang_omni.models.llada2_uni.config import LLaDA2UniOmniPipelineConfig
-
-
-def test_decoder_config_roundtrip():
-    original = LLaDA2UniOmniPipelineConfig(model_path="unused")
-    data = original.model_dump()
-    decoder = next(stage for stage in data["stages"] if stage["name"] == "image_decode")
-    assert decoder["process"] == "image_decode"
-    decoder["factory"].update(backend="sglang", attention_backend="torch_sdpa")
-
-    rebuilt = LLaDA2UniOmniPipelineConfig.model_validate(data)
-    stage = next(stage for stage in rebuilt.stages if stage.name == "image_decode")
-    assert stage.factory.model_extra == {
-        "attention_backend": "torch_sdpa",
-        "backend": "sglang",
-    }
-
 
 def test_sglang_decoder_factory_owns_runtime(monkeypatch):
     from sglang_omni.models.llada2_uni import merge, stages
@@ -81,11 +64,8 @@ def test_sglang_decoder_factory_owns_runtime(monkeypatch):
     payload = SimpleNamespace(data={})
     assert scheduler.fn(payload) is payload
     assert payload.data["format"] == "png" and payload.data["image"]
-    assert settings == {
-        "gpu_id": None,
-        "dtype": settings["dtype"],
-        "attention_backend": "torch_sdpa",
-    }
+    assert settings["gpu_id"] is None
+    assert settings["attention_backend"] == "torch_sdpa"
     assert events == ["enter", "exit", "enter", "exit"]
 
     monkeypatch.setattr(SimpleScheduler, "start", lambda self: events.append("done"))

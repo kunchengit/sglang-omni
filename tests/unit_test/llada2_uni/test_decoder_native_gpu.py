@@ -54,6 +54,7 @@ def native_worker(rank, directory, cfg, dtype):
     assert not torch.distributed.is_initialized()
 
 
+@pytest.mark.accelerator
 @pytest.mark.skipif(
     os.environ.get("LLADA_DECODER_GPU_TEST") != "1",
     reason="opt-in real native GPU test",

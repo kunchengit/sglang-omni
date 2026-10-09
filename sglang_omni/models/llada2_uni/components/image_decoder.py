@@ -21,7 +21,7 @@ from sglang_omni.models.llada2_uni.components.decoder_runtime import (
     DecoderRuntimeHandle,
 )
 from sglang_omni.models.llada2_uni.components.sigvq import SigVQ
-from sglang_omni.models.llada2_uni.components.transport import Sampler, create_transport
+from sglang_omni.models.llada2_uni.components.transport import sample_velocity
 from sglang_omni.models.weight_loader import resolve_model_path
 
 logger = logging.getLogger(__name__)
@@ -129,7 +129,6 @@ class LLaDA2ImageDecoder:
         self.dtype = dtype
         self.runtime = runtime
         if runtime is not None:
-            runtime.validate()
             if runtime.device != self.device or runtime.dtype != self.dtype:
                 raise ValueError("Decoder model and runtime device/dtype must match")
             else:
@@ -162,10 +161,6 @@ class LLaDA2ImageDecoder:
         else:
             pass
 
-    # ------------------------------------------------------------------
-    # Lazy model loading
-    # ------------------------------------------------------------------
-
     def ensure_sigvq(self):
         if self.sigvq is not None:
             return
@@ -184,10 +179,6 @@ class LLaDA2ImageDecoder:
         logger.info("SigVQ loaded from %s", sigvq_path)
 
     def ensure_diff_model(self, decode_mode: str):
-        if decode_mode not in {"normal", "decoder-turbo"}:
-            raise ValueError(f"Unsupported image decoder mode: {decode_mode!r}")
-        else:
-            pass
         if self.diff_model is not None and self.diff_model_mode == decode_mode:
             return
         else:
@@ -248,10 +239,6 @@ class LLaDA2ImageDecoder:
             .eval()
         )
         logger.info("VAE loaded from %s", vae_dir)
-
-    # ------------------------------------------------------------------
-    # Decode
-    # ------------------------------------------------------------------
 
     @torch.inference_mode()
     def decode(
@@ -333,18 +320,13 @@ class LLaDA2ImageDecoder:
             dtype=self.dtype,
         )
 
-        sampler = Sampler(create_transport("Linear", "velocity", None))
-        sample_fn = sampler.sample_ode(
-            sampling_method="euler",
+        samples = sample_velocity(
+            z,
+            model_fn,
             num_steps=steps,
-            atol=1e-6,
-            rtol=1e-3,
-            reverse=False,
-            time_shifting_factor=6,
-            stochast_ratio=1.0 if mode == "decoder-turbo" else 0.0,
+            turbo=mode == "decoder-turbo",
             generator=generator,
-        )
-        samples = sample_fn(z, model_fn)[-1].squeeze(2)
+        ).squeeze(2)
 
         # Stage 3: VAE decode
         self.ensure_vae()
@@ -352,32 +334,3 @@ class LLaDA2ImageDecoder:
         s = (s / self.vae.config.scaling_factor) + self.vae.config.shift_factor
         px = ((self.vae.decode(s, return_dict=False)[0] + 1) / 2).clamp_(0, 1)
         return to_pil_image(px[0].float())
-
-    @torch.inference_mode()
-    def decode_to_bytes(
-        self,
-        token_ids: list[int],
-        h: int,
-        w: int,
-        format: str = "PNG",
-        **decode_kwargs: str | int | None,
-    ) -> bytes:
-        """Decode VQ token IDs into image bytes.
-
-        Args:
-            token_ids: List of VQ token IDs (without the +157184 offset).
-            h: Semantic grid height.
-            w: Semantic grid width.
-            format: PIL image format (PNG or JPEG).
-            **decode_kwargs: Forwarded to :meth:`decode` (decode_mode, num_steps,
-                resolution_multiplier, seed).
-
-        Returns:
-            Image bytes.
-        """
-        import io
-
-        image = self.decode(token_ids, h, w, **decode_kwargs)
-        buf = io.BytesIO()
-        image.save(buf, format=format)
-        return buf.getvalue()

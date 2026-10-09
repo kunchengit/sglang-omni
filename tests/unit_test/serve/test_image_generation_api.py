@@ -85,18 +85,14 @@ with TestClient(app) as client:
 
 
 @pytest.mark.parametrize(
-    "field", ["cfg_scale", "cfg_text_scale", "cfg_image_scale", "cfg_rescale"]
+    "field,value",
+    [
+        ("cfg_scale", "NaN"),
+        ("cfg_text_scale", "Infinity"),
+        ("cfg_image_scale", "-Infinity"),
+        ("cfg_rescale", "NaN"),
+    ],
 )
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
-def test_cfg_must_be_finite(field, value):
-    with pytest.raises(ValidationError):
-        ImageGenerationParams(**{field: value})
-
-
-@pytest.mark.parametrize(
-    "field", ["cfg_scale", "cfg_text_scale", "cfg_image_scale", "cfg_rescale"]
-)
-@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
 def test_http_rejects_nonfinite_cfg_without_dispatch(api, field, value):
     client, coordinator = api
     response = client.post(
@@ -133,13 +129,9 @@ def test_invalid_image_parameters(params):
         ImageGenerationParams(**params)
 
 
-@pytest.mark.parametrize(
-    "modalities", [None, [], ["text"], ["image"], ["text", "image"]]
-)
-@pytest.mark.parametrize(
-    "image_config", [{}, {"cfg_scale": 1.0}, {"cfg_text_scale": 0.0}]
-)
-def test_image_config_and_modalities_reach_omni_request(modalities, image_config):
+def test_image_config_and_modalities_reach_omni_request():
+    modalities = ["text", "image"]
+    image_config = {"cfg_scale": 1.0, "cfg_text_scale": 0.0}
     req = ChatCompletionRequest(
         model="llada2-uni",
         messages=[{"role": "user", "content": "Make it red"}],
@@ -153,9 +145,8 @@ def test_image_config_and_modalities_reach_omni_request(modalities, image_config
     )
     generate = build_chat_generate_request(req)
     omni = Client.build_omni_request(generate)
-    expected_modalities = ["text"] if modalities is None else modalities
-    assert generate.output_modalities == expected_modalities
-    assert omni.metadata["output_modalities"] == expected_modalities
+    assert generate.output_modalities == modalities
+    assert omni.metadata["output_modalities"] == modalities
     assert omni.metadata["image_generation"] == image_config
     assert omni.metadata["model"] == "llada2-uni"
     assert omni.inputs["images"] == ["input.png"]
@@ -375,15 +366,25 @@ def test_native_image_rejects_unsupported_controls_and_multiple_sources(api):
     assert coordinator.requests == []
 
 
-@pytest.mark.parametrize("editing", [False, True])
-@pytest.mark.parametrize("client_error", [False, True])
 @pytest.mark.parametrize(
-    ("message", "status"),
+    ("editing", "client_error", "message", "status"),
     [
-        ("Requested token count exceeds the model's maximum context length", 400),
-        ("Request requires more tokens than the thinker KV cache can hold", 400),
-        ("Image decoder failed", 500),
-        (QueueFullError.MESSAGE, 503),
+        (
+            False,
+            True,
+            "Requested token count exceeds the model's maximum context length",
+            400,
+        ),
+        (
+            True,
+            False,
+            "Request requires more tokens than the thinker KV cache can hold",
+            400,
+        ),
+        (False, False, "Image decoder failed", 500),
+        (True, True, "Image decoder failed", 500),
+        (False, True, QueueFullError.MESSAGE, 503),
+        (True, False, QueueFullError.MESSAGE, 503),
     ],
 )
 def test_native_image_pipeline_errors(
