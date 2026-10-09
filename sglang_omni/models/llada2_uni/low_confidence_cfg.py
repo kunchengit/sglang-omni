@@ -69,7 +69,10 @@ class LowConfidenceCFG(DllmAlgorithm):
         )  # noqa: leading-underscore  # DLLM protocol
         steps = min(max(steps, 1), self.block_size)
         base, remainder = divmod(self.block_size, steps)
-        force_image_only = req._task_kind in ("t2i", "edit")  # noqa: leading-underscore  # DLLM protocol
+        force_image_only = req._task_kind in (
+            "t2i",
+            "edit",
+        )  # noqa: leading-underscore  # DLLM protocol
         active_ids = ids[cond_idx : cond_idx + 1] if is_cfg else ids
 
         for step in range(steps):

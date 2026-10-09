@@ -234,8 +234,20 @@ def build_dllm_thinker_request(
                 raise ValueError(f"Invalid CFG {branch} left-pad length: {pad_len}")
             else:
                 pass
-            setattr(req, f"_{branch}_input_ids", list(branch_ids))
-            setattr(req, f"_{branch}_left_pad_len", pad_len)
+            if branch == "uncond":
+                req._uncond_input_ids = list(
+                    branch_ids
+                )  # noqa: leading-underscore  # DLLM protocol
+                req._uncond_left_pad_len = (
+                    pad_len  # noqa: leading-underscore  # DLLM protocol
+                )
+            else:
+                req._uncond_img_input_ids = list(
+                    branch_ids
+                )  # noqa: leading-underscore  # DLLM protocol
+                req._uncond_img_left_pad_len = (
+                    pad_len  # noqa: leading-underscore  # DLLM protocol
+                )
         if ss.get("uncond_img_input_ids") is not None:
             req._cfg_image_scale = float(  # noqa: leading-underscore  # DLLM protocol
                 ss.get("cfg_image_scale", ig.get("cfg_image_scale", 0.0))
