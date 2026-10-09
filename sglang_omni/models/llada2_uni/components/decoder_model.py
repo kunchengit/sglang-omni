@@ -10,17 +10,39 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TypedDict
 
 import torch
 from safetensors.torch import load_file
 from torch import nn
 
-from .decoder_runtime import DecoderRuntimeHandle
+from sglang_omni.models.llada2_uni.components.decoder_runtime import (
+    DecoderRuntimeHandle,
+)
 
 
-def decoder_config(cfg: dict[str, Any]) -> dict[str, Any]:
-    defaults = {
+class DecoderConfig(TypedDict, total=False):
+    """Checkpoint architecture overrides; omitted fields use decoder defaults."""
+
+    all_patch_size: list[int] | tuple[int, ...]
+    all_f_patch_size: list[int] | tuple[int, ...]
+    in_channels: int
+    dim: int
+    n_layers: int
+    n_refiner_layers: int
+    n_heads: int
+    n_kv_heads: int
+    norm_eps: float
+    qk_norm: bool
+    cap_feat_dim: int
+    rope_theta: float
+    t_scale: float
+    axes_dims: list[int] | tuple[int, ...]
+    axes_lens: list[int] | tuple[int, ...]
+
+
+def decoder_config(cfg: DecoderConfig) -> DecoderConfig:
+    defaults: DecoderConfig = {
         "all_patch_size": (2,),
         "all_f_patch_size": (1,),
         "in_channels": 16,
@@ -45,8 +67,10 @@ def decoder_config(cfg: dict[str, Any]) -> dict[str, Any]:
     else:
         pass
     defaults.update({key: cfg[key] for key in defaults.keys() & cfg.keys()})
-    for key in ("all_patch_size", "all_f_patch_size", "axes_dims", "axes_lens"):
-        defaults[key] = tuple(defaults[key])
+    defaults["all_patch_size"] = tuple(defaults["all_patch_size"])
+    defaults["all_f_patch_size"] = tuple(defaults["all_f_patch_size"])
+    defaults["axes_dims"] = tuple(defaults["axes_dims"])
+    defaults["axes_lens"] = tuple(defaults["axes_lens"])
     return defaults
 
 
@@ -85,7 +109,7 @@ class ZImageTransformer2DModelWrapper(nn.Module):
     def __init__(
         self,
         decoder_dir: str,
-        cfg: dict[str, Any],
+        cfg: DecoderConfig,
         device: torch.device,
         dtype: torch.dtype,
         *,

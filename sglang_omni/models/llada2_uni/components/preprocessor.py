@@ -77,7 +77,7 @@ def align_cfg_unconditional_input_ids(
         return list(unconditional_input_ids), 0
     else:
         pass
-    mask_id = getattr(tokenizer, "mask_token_id", None)
+    mask_id = tokenizer.mask_token_id
     if mask_id is None:
         raise ValueError("LLaDA2 tokenizer has no mask_token_id for CFG padding")
     else:
