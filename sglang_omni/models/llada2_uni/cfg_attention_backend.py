@@ -6,6 +6,7 @@ from __future__ import annotations
 import torch
 from flashinfer.cascade import merge_state
 from flashinfer.prefill import BatchPrefillWithRaggedKVCacheWrapper
+from sglang.srt import server_args
 from sglang.srt.layers.attention.attention_registry import ATTENTION_BACKENDS
 from sglang.srt.layers.attention.flashinfer_backend import (
     FlashInferAttnBackend,
@@ -15,10 +16,6 @@ from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.mem_cache.memory_pool import KVWriteLoc
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.model_runner import ModelRunner
-from sglang.srt.server_args import (
-    ATTENTION_BACKEND_CHOICES,
-    add_attention_backend_choices,
-)
 
 CFG_ATTENTION_BACKEND = "llada2_uni_cfg_flashinfer"
 
@@ -278,7 +275,7 @@ def register_llada2_cfg_flashinfer_backend() -> None:
         )
 
     ATTENTION_BACKENDS[CFG_ATTENTION_BACKEND] = _create_backend
-    if CFG_ATTENTION_BACKEND not in ATTENTION_BACKEND_CHOICES:
-        add_attention_backend_choices([CFG_ATTENTION_BACKEND])
+    if CFG_ATTENTION_BACKEND not in server_args.ATTENTION_BACKEND_CHOICES:
+        server_args.add_attention_backend_choices([CFG_ATTENTION_BACKEND])
     else:
         pass
