@@ -227,11 +227,7 @@ class DllmScheduler:
                 try:
                     self.validate_request_group_capacity(request_group)
                 except RuntimeError as exc:
-                    logger.warning(
-                        "DllmScheduler: rejecting request %s: %s",
-                        req.rid,
-                        exc,
-                    )
+                    logger.warning(f"DllmScheduler: rejecting request {req.rid}: {exc}")
                     self.reject_waiting_request_group(req.rid, str(exc))
             else:
                 logger.warning(
@@ -783,7 +779,7 @@ class DllmScheduler:
                     result = self.result_adapter(req_data)
                     message_type = "result"
                 except Exception as exc:
-                    logger.exception("DLLM result adapter failed for %s", req.rid)
+                    logger.exception(f"DLLM result adapter failed for {req.rid}")
                     result = str(exc)
                     message_type = "error"
                 self.outbox.put(
