@@ -79,6 +79,8 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
 class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
     """LLaDA text, image generation and editing with a shared thinker."""
 
+    supports_image_api: ClassVar[bool] = True
+
     stages: list[StageConfig] = [
         StageConfig(
             name=PREPROCESSING_STAGE,
@@ -120,7 +122,7 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
     ]
 
 
-EntryClass = LLaDA2UniPipelineConfig
+EntryClass = LLaDA2UniOmniPipelineConfig
 
 Variants = {
     "text": LLaDA2UniPipelineConfig,
