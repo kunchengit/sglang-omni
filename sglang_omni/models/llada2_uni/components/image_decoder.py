@@ -28,57 +28,71 @@ logger = logging.getLogger(__name__)
 
 
 def create_decoder_model_fn(
-    model, cap_pos, cap_neg, cfg_scale, patch_size, f_patch_size, dtype
+    model,
+    positive_caption_features,
+    negative_caption_features,
+    cfg_scale,
+    patch_size,
+    f_patch_size,
+    dtype,
 ):
-    n = len(cap_pos)
-    doubled = cap_pos + cap_neg
+    batch_size = len(positive_caption_features)
+    combined_caption_features = positive_caption_features + negative_caption_features
 
-    def fn(x, t, **kw):
-        t_t = (
-            torch.tensor([t], device=x.device, dtype=torch.float32)
-            if not isinstance(t, torch.Tensor)
-            else t.float()
+    def predict_velocity(latents, timestep, **kwargs):
+        batch_timesteps = (
+            torch.tensor([timestep], device=latents.device, dtype=torch.float32)
+            if not isinstance(timestep, torch.Tensor)
+            else timestep.float()
         )
-        if t_t.dim() == 0:
-            t_t = t_t.unsqueeze(0)
+        if batch_timesteps.dim() == 0:
+            batch_timesteps = batch_timesteps.unsqueeze(0)
         else:
             pass
-        if t_t.shape[0] == 1 and x.shape[0] > 1:
-            t_t = t_t.expand(x.shape[0])
+        if batch_timesteps.shape[0] == 1 and latents.shape[0] > 1:
+            batch_timesteps = batch_timesteps.expand(latents.shape[0])
         else:
             pass
         if cfg_scale > 0:
-            out = model(
-                x=list(x.to(dtype).repeat(2, 1, 1, 1, 1).unbind(0)),
-                t=t_t.repeat(2),
-                cap_feats=doubled,
+            model_output = model(
+                x=list(latents.to(dtype).repeat(2, 1, 1, 1, 1).unbind(0)),
+                t=batch_timesteps.repeat(2),
+                cap_feats=combined_caption_features,
                 patch_size=patch_size,
                 f_patch_size=f_patch_size,
                 return_dict=False,
             )
-            pos, neg = out[0][:n], out[0][n:]
-            res = []
-            for p, ng in zip(pos, neg):
-                p, ng = p.float(), ng.float()
-                pred = p + cfg_scale * (p - ng)
-                on, nn_ = torch.linalg.vector_norm(p), torch.linalg.vector_norm(pred)
-                safe_norm = torch.where(nn_ == 0, torch.ones_like(nn_), nn_)
-                pred *= torch.where(nn_ > on, on / safe_norm, torch.ones_like(nn_))
-                res.append(pred)
-            return torch.stack(res)
+            positive_predictions = model_output[0][:batch_size]
+            negative_predictions = model_output[0][batch_size:]
+            guided_predictions = []
+            for positive, negative in zip(positive_predictions, negative_predictions):
+                positive, negative = positive.float(), negative.float()
+                guided = positive + cfg_scale * (positive - negative)
+                positive_norm = torch.linalg.vector_norm(positive)
+                guided_norm = torch.linalg.vector_norm(guided)
+                safe_norm = torch.where(
+                    guided_norm == 0, torch.ones_like(guided_norm), guided_norm
+                )
+                guided *= torch.where(
+                    guided_norm > positive_norm,
+                    positive_norm / safe_norm,
+                    torch.ones_like(guided_norm),
+                )
+                guided_predictions.append(guided)
+            return torch.stack(guided_predictions)
         else:
             pass
-        out = model(
-            x=list(x.to(dtype).unbind(0)),
-            t=t_t,
-            cap_feats=cap_pos,
+        model_output = model(
+            x=list(latents.to(dtype).unbind(0)),
+            t=batch_timesteps,
+            cap_feats=positive_caption_features,
             patch_size=patch_size,
             f_patch_size=f_patch_size,
             return_dict=False,
         )
-        return torch.stack([o.float() for o in out[0]])
+        return torch.stack([prediction.float() for prediction in model_output[0]])
 
-    return fn
+    return predict_velocity
 
 
 class LLaDA2ImageDecoder:
@@ -89,14 +103,14 @@ class LLaDA2ImageDecoder:
             decoder/, vae/, image_tokenizer/).
         device: Torch device string.
         dtype: Model dtype (default: bfloat16).
-        decode_mode: ``"normal"`` for standard 50-step decoder,
-            ``"decoder-turbo"`` for distilled 8-step decoder. Used as the default
-            when :meth:`decode` is called without an explicit ``decode_mode``.
+        decode_mode: "normal" for standard 50-step decoder,
+            "decoder-turbo" for distilled 8-step decoder. Used as the default
+            when decode is called without an explicit decode_mode.
         num_steps: Default number of ODE sampling steps.
         resolution_multiplier: Default upscale factor (2 = 1024px from 512px tokens).
-        backend: ``diffusers`` (default) or explicitly ``sglang``.
+        backend: diffusers (default) or explicitly sglang.
         runtime: Caller-owned SGLang diffusion runtime. Required by the
-            ``sglang`` backend and rejected by the ``diffusers`` backend.
+            sglang backend and rejected by the diffusers backend.
     """
 
     def __init__(
@@ -176,7 +190,7 @@ class LLaDA2ImageDecoder:
             torch.load(sigvq_path, map_location=self.device, weights_only=True)
         )
         self.sigvq = sigvq.eval()
-        logger.info("SigVQ loaded from %s", sigvq_path)
+        logger.info(f"SigVQ loaded from {sigvq_path}")
 
     def ensure_diff_model(self, decode_mode: str):
         if self.diff_model is not None and self.diff_model_mode == decode_mode:
@@ -185,9 +199,8 @@ class LLaDA2ImageDecoder:
             pass
         if self.diff_model is not None:
             logger.info(
-                "Switching diffusion model: %s -> %s (releasing GPU memory)",
-                self.diff_model_mode,
-                decode_mode,
+                f"Switching diffusion model: {self.diff_model_mode} -> "
+                f"{decode_mode} (releasing GPU memory)"
             )
             del self.diff_model
             self.diff_model = None
@@ -223,9 +236,7 @@ class LLaDA2ImageDecoder:
         self.diff_model = model
         self.diff_config = cfg
         self.diff_model_mode = decode_mode
-        logger.info(
-            "Diffusion model loaded from %s (%s mode)", decoder_dir, decode_mode
-        )
+        logger.info(f"Diffusion model loaded from {decoder_dir} ({decode_mode} mode)")
 
     def ensure_vae(self):
         if self.vae is not None:
@@ -238,7 +249,7 @@ class LLaDA2ImageDecoder:
             .to(self.device)
             .eval()
         )
-        logger.info("VAE loaded from %s", vae_dir)
+        logger.info(f"VAE loaded from {vae_dir}")
 
     @torch.inference_mode()
     def decode(
@@ -259,23 +270,23 @@ class LLaDA2ImageDecoder:
             h: Semantic grid height (image_pixels // 16).
             w: Semantic grid width (image_pixels // 16).
             decode_mode: Override instance default; switches diffusion weights
-                between ``decoder/`` and ``decoder-turbo/`` (single-slot reload).
+                between decoder/ and decoder-turbo/ (single-slot reload).
             num_steps: Override default ODE step count.
             resolution_multiplier: Override default upscale factor.
             seed: If set, draws initial noise with a deterministic generator.
-                If ``None``, each call draws from the global RNG.
+                If None, each call draws from the global RNG.
 
         Returns:
             PIL.Image.Image
         """
         mode = decode_mode if decode_mode is not None else self.decode_mode
         steps = num_steps if num_steps is not None else self.num_steps
-        rmul = (
+        output_resolution_multiplier = (
             resolution_multiplier
             if resolution_multiplier is not None
             else self.resolution_multiplier
         )
-        self.validate_settings(mode, steps, rmul)
+        self.validate_settings(mode, steps, output_resolution_multiplier)
         if not isinstance(h, int) or not isinstance(w, int) or h < 1 or w < 1:
             raise ValueError("Image decoder grid dimensions must be positive integers")
         else:
@@ -291,46 +302,53 @@ class LLaDA2ImageDecoder:
         else:
             pass
 
-        # Stage 1: SigVQ -> semantic features
-        th = h * 16 * rmul
-        tw = w * 16 * rmul
+        image_height = h * 16 * output_resolution_multiplier
+        image_width = w * 16 * output_resolution_multiplier
         self.ensure_sigvq()
-        tok = torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
-        up = F.interpolate(tok, scale_factor=2, mode="nearest").long().view(1, -1)
-        cap_pos = [self.sigvq(up).squeeze(0).contiguous()]
-        cap_neg = [torch.zeros_like(cap_pos[0])]
+        token_grid = torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
+        upsampled_tokens = (
+            F.interpolate(token_grid, scale_factor=2, mode="nearest").long().view(1, -1)
+        )
+        positive_caption_features = [
+            self.sigvq(upsampled_tokens).squeeze(0).contiguous()
+        ]
+        negative_caption_features = [torch.zeros_like(positive_caption_features[0])]
 
-        # Stage 2: Diffusion ODE sampling
         self.ensure_diff_model(mode)
-        cfg = self.diff_config
-        noise_shape = [1, 16, 1, 2 * (th // 16), 2 * (tw // 16)]
+        decoder_config = self.diff_config
+        noise_shape = [1, 16, 1, 2 * (image_height // 16), 2 * (image_width // 16)]
         if seed is not None:
             generator = torch.Generator(device=self.device).manual_seed(int(seed))
-            z = torch.randn(noise_shape, device=self.device, generator=generator)
+            initial_latents = torch.randn(
+                noise_shape, device=self.device, generator=generator
+            )
         else:
             generator = None
-            z = torch.randn(noise_shape, device=self.device)
-        model_fn = create_decoder_model_fn(
+            initial_latents = torch.randn(noise_shape, device=self.device)
+        velocity_model = create_decoder_model_fn(
             self.diff_model,
-            cap_pos,
-            cap_neg,
+            positive_caption_features,
+            negative_caption_features,
             cfg_scale=0.0 if mode == "decoder-turbo" else 1.0,
-            patch_size=cfg.get("all_patch_size", (2,))[0],
-            f_patch_size=cfg.get("all_f_patch_size", (1,))[0],
+            patch_size=decoder_config.get("all_patch_size", (2,))[0],
+            f_patch_size=decoder_config.get("all_f_patch_size", (1,))[0],
             dtype=self.dtype,
         )
 
         samples = sample_velocity(
-            z,
-            model_fn,
+            initial_latents,
+            velocity_model,
             num_steps=steps,
             turbo=mode == "decoder-turbo",
             generator=generator,
         ).squeeze(2)
 
-        # Stage 3: VAE decode
         self.ensure_vae()
-        s = samples.to(self.dtype)
-        s = (s / self.vae.config.scaling_factor) + self.vae.config.shift_factor
-        px = ((self.vae.decode(s, return_dict=False)[0] + 1) / 2).clamp_(0, 1)
-        return to_pil_image(px[0].float())
+        vae_latents = samples.to(self.dtype)
+        vae_latents = (
+            vae_latents / self.vae.config.scaling_factor
+        ) + self.vae.config.shift_factor
+        pixels = ((self.vae.decode(vae_latents, return_dict=False)[0] + 1) / 2).clamp_(
+            0, 1
+        )
+        return to_pil_image(pixels[0].float())

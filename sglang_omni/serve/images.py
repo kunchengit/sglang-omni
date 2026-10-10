@@ -147,7 +147,7 @@ def register_images(app: FastAPI) -> None:
         except Exception as exc:
             status_code = generation_error_status_code(exc)
             if status_code == 500:
-                logger.exception("Error generating image for request %s", request_id)
+                logger.exception(f"Error generating image for request {request_id}")
             else:
                 pass
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc

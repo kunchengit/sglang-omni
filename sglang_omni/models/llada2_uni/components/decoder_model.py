@@ -93,11 +93,11 @@ class ZImageTransformer2DModelWrapper(nn.Module):
     """Load a semantic decoder checkpoint and expose its forward convention.
 
     Args:
-        decoder_dir: Directory containing ``model.safetensors``.
+        decoder_dir: Directory containing model.safetensors.
         cfg: Decoder config, with cap_feat_dim/axes_lens overrides applied
             by the image decoder. Unknown architectural options fail closed.
         device, dtype: Weight placement and inference dtype.
-        backend: ``diffusers`` (default) or explicitly ``sglang``; no fallback.
+        backend: diffusers (default) or explicitly sglang; no fallback.
         runtime: Caller-owned single-rank SGLang diffusion runtime.
 
     Requires diffusers with ZImage support (tested with 0.37.0). Inputs are
