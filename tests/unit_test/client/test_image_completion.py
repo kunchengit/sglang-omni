@@ -4,23 +4,48 @@
 from __future__ import annotations
 
 import asyncio
+from typing import AsyncIterator, NoReturn, TypeAlias, TypedDict
 
 import pytest
 
 from sglang_omni.client import Client, ClientError
 from sglang_omni.client.types import GenerateChunk, GenerateRequest
+from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
+
+PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+JSONValue: TypeAlias = (
+    str
+    | int
+    | float
+    | bool
+    | None
+    | list["JSONValue"]
+    | dict[str, "JSONValue"]
+)
+
+
+class ResultPayload(TypedDict, total=False):
+    decode: dict[str, JSONValue]
+    image_decode: dict[str, JSONValue]
+    image: str
 
 
 class RecordingCoordinator:
-    def __init__(self, result):
+    def __init__(self, result: ResultPayload | GenerateChunk | None) -> None:
         self.result = result
-        self.requests = []
+        self.requests: list[OmniRequest] = []
 
-    async def submit(self, request_id, request):
+    async def submit(
+        self, request_id: str, request: OmniRequest
+    ) -> ResultPayload | GenerateChunk | None:
         self.requests.append(request)
         return self.result
 
-    async def stream(self, request_id, request):
+    async def stream(
+        self, request_id: str, request: OmniRequest
+    ) -> AsyncIterator[CompleteMessage | StreamMessage]:
         raise AssertionError("Image requests must not reach coordinator.stream")
         yield
 
@@ -42,14 +67,14 @@ def test_image_result_preserves_decode_fields(merged):
         "engine_time_s": 0.25,
     }
     result = (
-        {"decode": decode, "image_decode": {"image": "cG5n"}}
+        {"decode": decode, "image_decode": {"image": PNG_BASE64}}
         if merged
-        else {**decode, "image": "cG5n"}
+        else {**decode, "image": PNG_BASE64}
     )
     chunk = Client.default_result_builder("r1", result)
-    assert chunk.image == "cG5n"
+    assert chunk.image == PNG_BASE64
     assert chunk.modality == "image"
-    assert chunk.to_dict()["image"] == "cG5n"
+    assert chunk.to_dict()["image"] == PNG_BASE64
     assert chunk.token_ids == decode["token_ids"]
     assert chunk.logprobs == decode["logprobs"]
     assert chunk.stage_id == 2
@@ -61,7 +86,7 @@ def test_image_result_preserves_decode_fields(merged):
             GenerateRequest(prompt="draw a square", stream=False), request_id="r1"
         )
     )
-    assert completion.image == "cG5n"
+    assert completion.image == PNG_BASE64
     assert completion.audio is None
     assert completion.text == decode["text"]
     assert completion.finish_reason == "length"
@@ -84,7 +109,7 @@ def test_empty_image_terminal_preserves_text(image_result):
 
 
 def test_custom_image_chunk_completes() -> None:
-    chunk = GenerateChunk(request_id="original", image="cG5n", modality="image")
+    chunk = GenerateChunk(request_id="original", image=PNG_BASE64, modality="image")
     client = Client(RecordingCoordinator(chunk))
     result = asyncio.run(
         client.completion(GenerateRequest(prompt="draw", stream=False), request_id="r1")
@@ -139,7 +164,7 @@ def test_client_rejects_image_stream_before_dispatch(kwargs):
 
 @pytest.mark.parametrize("stream", [False, True])
 def test_completion_stream_never_silently_discards_image_output(stream):
-    coordinator = RecordingCoordinator({"image": "cG5n"})
+    coordinator = RecordingCoordinator({"image": PNG_BASE64})
     client = Client(coordinator)
 
     async def consume():

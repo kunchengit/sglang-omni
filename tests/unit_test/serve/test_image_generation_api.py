@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from typing import AsyncIterator, NoReturn, TypeAlias, TypedDict
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,16 +14,38 @@ from pydantic import ValidationError
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client
 from sglang_omni.client.types import ClientError
+from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import build_chat_generate_request
 from sglang_omni.serve.protocol import ChatCompletionRequest, ImageGenerationParams
 
+PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+JSONValue: TypeAlias = (
+    str
+    | int
+    | float
+    | bool
+    | None
+    | list["JSONValue"]
+    | dict[str, "JSONValue"]
+)
+
+
+class ResultPayload(TypedDict, total=False):
+    decode: dict[str, JSONValue]
+    image_decode: dict[str, JSONValue]
+    image: str
+
 
 class RecordingCoordinator:
     def __init__(self) -> None:
-        self.requests = []
+        self.requests: list[OmniRequest] = []
 
-    async def submit(self, request_id, request):
+    async def submit(
+        self, request_id: str, request: OmniRequest
+    ) -> ResultPayload:
         self.requests.append(request)
         return {
             "decode": {
@@ -31,10 +54,12 @@ class RecordingCoordinator:
                 "prompt_tokens": 3,
                 "completion_tokens": 2,
             },
-            "image_decode": {"image": "cG5n"},
+            "image_decode": {"image": PNG_BASE64},
         }
 
-    async def stream(self, request_id, request):
+    async def stream(
+        self, request_id: str, request: OmniRequest
+    ) -> AsyncIterator[CompleteMessage | StreamMessage]:
         raise AssertionError("Image requests must be rejected before streaming")
         yield
 
@@ -202,7 +227,7 @@ def test_chat_image_response_keeps_pr3_format_and_modality_choices(api, modaliti
     data = response.json()
     message = data["choices"][0]["message"]
     if modalities and "image" in modalities:
-        assert message["image"] == {"data": "cG5n", "format": "png"}
+        assert message["image"] == {"data": PNG_BASE64, "format": "png"}
     else:
         assert "image" not in message
     if modalities == ["image"]:
@@ -332,7 +357,7 @@ def test_native_image_routes_preserve_generation_controls(api, editing):
             "/v1/images/generations", json={**fields, "size": "1024x768"}
         )
     assert response.status_code == 200, response.text
-    assert response.json()["data"][0]["b64_json"] == "cG5n"
+    assert response.json()["data"][0]["b64_json"] == PNG_BASE64
     request = coordinator.requests[0]
     options = request.metadata["image_generation"]
     assert options["seed"] == 0
@@ -340,7 +365,7 @@ def test_native_image_routes_preserve_generation_controls(api, editing):
     assert options["decoder_steps"] == 8
     assert options["dllm_steps"] == 32
     if editing:
-        assert request.inputs["images"] == ["data:image/png;base64,cG5n"]
+        assert request.inputs["images"] == [f"data:image/png;base64,{PNG_BASE64}"]
         assert "image_w" not in options
     else:
         assert (options["image_w"], options["image_h"]) == (1024, 768)
@@ -391,7 +416,7 @@ def test_native_image_pipeline_errors(
 ):
     client, coordinator = api
 
-    async def submit(request_id, request):
+    async def submit(request_id: str, request: OmniRequest) -> NoReturn:
         if client_error:
             raise ClientError(message)
         else:
