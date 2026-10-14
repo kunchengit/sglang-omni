@@ -29,7 +29,7 @@ import uuid
 from contextlib import aclosing, suppress
 from dataclasses import asdict
 from enum import Enum
-from typing import TYPE_CHECKING, AsyncGenerator, AsyncIterator, Literal
+from typing import AsyncGenerator, AsyncIterator, Literal
 
 from fastapi import (
     Depends,
@@ -144,12 +144,6 @@ from sglang_omni.serve.translations import register_translations
 logger = logging.getLogger(__name__)
 HTTP_DISCONNECT_POLL_INTERVAL_S = 0.05
 HTTP_DISCONNECT_CANCEL_TIMEOUT_S = 0.1
-
-if TYPE_CHECKING:
-    from sglang.multimodal_gen.runtime.entrypoints.openai.protocol import (
-        ImageGenerationsRequest,
-    )
-
 
 class ServerStatus(Enum):
     """Readiness the launcher holds at STARTING until its warmup requests complete."""
