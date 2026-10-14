@@ -39,7 +39,6 @@ class LLaDA2UniRequest(DllmRequest):
     _task_kind: Literal["chat", "t2i", "edit", "interleaved"] = (
         "chat"  # noqa: leading-underscore  # DLLM protocol
     )
-    _is_thinking_phase1: bool = False  # noqa: leading-underscore  # DLLM protocol
     _cfg_scale: float = 4.0  # noqa: leading-underscore  # DLLM protocol
     _cfg_image_scale: float = 0.0  # noqa: leading-underscore  # DLLM protocol
     _cfg_rescale: float = 0.7  # noqa: leading-underscore  # DLLM protocol

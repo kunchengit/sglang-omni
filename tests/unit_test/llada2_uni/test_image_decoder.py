@@ -11,6 +11,7 @@ import re
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from typing import get_type_hints
 from unittest.mock import Mock
 
 import numpy as np
@@ -27,14 +28,16 @@ from sglang_omni.config import build_process_topology_plan, build_stage_placemen
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.patch import ConfigPatchSet
 from sglang_omni.config.resolver import ConfigResolver
+from sglang_omni.models.llada2_uni import stages
 from sglang_omni.models.llada2_uni.components import decoder_runtime
-from sglang_omni.models.llada2_uni.components import image_decoder as decoder_module
 from sglang_omni.models.llada2_uni.components.decoder_model import (
     DecoderConfig,
     ZImageTransformer2DModelWrapper,
     decoder_config,
 )
 from sglang_omni.models.llada2_uni.components.image_decoder import (
+    DecoderBackend,
+    DecoderMode,
     LLaDA2ImageDecoder,
     create_decoder_model_fn,
 )
@@ -219,6 +222,9 @@ def test_sglang_backend_matches_diffusers(tmp_path: Path) -> None:
 
 
 def test_sglang_decoder_factory_wiring(monkeypatch: pytest.MonkeyPatch) -> None:
+    factory_types = get_type_hints(create_image_decode_executor)
+    assert factory_types["backend"] == DecoderBackend
+    assert factory_types["decode_mode"] == DecoderMode
     runtime = Mock(spec=decoder_runtime.DecoderRuntimeHandle)
     runtime.compute_context.return_value = nullcontext()
     initialize = Mock(return_value=runtime)
@@ -226,12 +232,13 @@ def test_sglang_decoder_factory_wiring(monkeypatch: pytest.MonkeyPatch) -> None:
     decoder.decode.return_value = Image.new("RGB", (8, 8))
     constructor = Mock(return_value=decoder)
     monkeypatch.setattr(decoder_runtime, "initialize_decoder_runtime", initialize)
-    monkeypatch.setattr(decoder_module, "LLaDA2ImageDecoder", constructor)
+    monkeypatch.setattr(stages, "LLaDA2ImageDecoder", constructor)
 
     scheduler = create_image_decode_executor("unused", device="cpu", backend="sglang")
     state = LLaDA2UniPipelineState(
         task_kind="t2i",
         thinker_out={"output_ids": [IMAGE_TOKEN_OFFSET + 3]},
+        stream_state={"image_info": [{"grid_h": 1, "grid_w": 1}]},
         request_metadata={"image_generation": {"decode_mode": "decoder-turbo"}},
     )
     payload = StagePayload(
@@ -666,7 +673,7 @@ def test_edit_preprocess_merge_extract_and_decode(
     assert params == generation_params
 
     decoder, _ = decode_probe
-    monkeypatch.setattr(decoder_module, "LLaDA2ImageDecoder", lambda **kwargs: decoder)
+    monkeypatch.setattr(stages, "LLaDA2ImageDecoder", lambda **kwargs: decoder)
     scheduler = create_image_decode_executor("unused", device="cpu")
     payload.data = state.to_dict()
     result = scheduler.fn(payload)
@@ -674,3 +681,9 @@ def test_edit_preprocess_merge_extract_and_decode(
     assert image.size == (grid_w * 16, grid_h * 16)
     assert image.getpixel((0, 0)) == (0, 127, 255)
     assert result.data["events"][0]["type"] == "image_final"
+    state.thinker_out["output_ids"] = [
+        IMAGE_TOKEN_OFFSET + 3,
+        IMAGE_TOKEN_OFFSET + 4,
+    ]
+    with pytest.raises(ValueError, match="does not match"):
+        extract_image_vq_tokens(state)

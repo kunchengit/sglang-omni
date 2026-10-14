@@ -39,7 +39,6 @@ class ImageGrid(TypedDict):
 
 class LLaDA2UniStreamState(TypedDict, total=False):
     image_info: list[ImageGrid]
-    max_seq_len: int
     dllm_steps: int
     cfg_scale: float
     cfg_rescale: float

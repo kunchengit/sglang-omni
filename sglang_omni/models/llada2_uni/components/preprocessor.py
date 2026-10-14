@@ -438,7 +438,6 @@ class LLaDA2Preprocessor:
                 pass
             grid_h, grid_w = image_h // 32, image_w // 32
             stream_state["image_info"] = [{"grid_h": grid_h, "grid_w": grid_w}]
-            stream_state["max_seq_len"] = self.max_seq_len
             if ig.get("dllm_steps") is not None:
                 stream_state["dllm_steps"] = int(ig["dllm_steps"])
             else:

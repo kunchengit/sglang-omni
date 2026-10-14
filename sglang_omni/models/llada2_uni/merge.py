@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import math
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -42,29 +41,16 @@ def extract_image_vq_tokens(
         return None
     else:
         pass
-    image_info = state.stream_state.get("image_info", [])
-    if image_info:
-        h, w = image_info[0].get("grid_h"), image_info[0].get("grid_w")
-        if not (
-            isinstance(h, int)
-            and isinstance(w, int)
-            and h > 0
-            and w > 0
-            and h * w == len(tokens)
-        ):
-            raise ValueError(
-                f"Image output grid {h}x{w} does not match {len(tokens)} VQ tokens"
-            )
-        else:
-            pass
+    image_grid = state.stream_state["image_info"][0]
+    grid_height, grid_width = image_grid["grid_h"], image_grid["grid_w"]
+    if grid_height * grid_width != len(tokens):
+        raise ValueError(
+            f"Image output grid {grid_height}x{grid_width} does not match {len(tokens)} VQ tokens"
+        )
     else:
-        h = w = math.isqrt(len(tokens))
-        if h * w != len(tokens):
-            raise ValueError(f"Cannot infer an image grid from {len(tokens)} VQ tokens")
-        else:
-            pass
+        pass
     params = state.request_metadata.get("image_generation", {})
-    return tokens, h, w, params if isinstance(params, dict) else {}
+    return tokens, grid_height, grid_width, params if isinstance(params, dict) else {}
 
 
 def decode_events(

@@ -8,16 +8,17 @@ import io
 import logging
 from collections.abc import Mapping
 from contextlib import nullcontext
-from typing import TYPE_CHECKING
 
+import torch
 from typing_extensions import NotRequired, TypedDict
 
-if TYPE_CHECKING:
-    import torch
-else:
-    pass
-
+from sglang_omni.models.llada2_uni.components.image_decoder import (
+    DecoderBackend,
+    DecoderMode,
+    LLaDA2ImageDecoder,
+)
 from sglang_omni.models.llada2_uni.config import IMAGE_STAGE, THINKER_STAGE
+from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
 from sglang_omni.models.llada2_uni.payload_types import (
     LLaDA2UniEvent,
     LLaDA2UniPipelineState,
@@ -248,17 +249,12 @@ def create_image_decode_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str | torch.dtype | None = None,
-    decode_mode: str = "normal",
+    decode_mode: DecoderMode = "normal",
     num_steps: int = 50,
     resolution_multiplier: int = 2,
-    backend: str = "diffusers",
+    backend: DecoderBackend = "diffusers",
     attention_backend: str = "torch_sdpa",
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    from sglang_omni.models.llada2_uni.components.image_decoder import (
-        LLaDA2ImageDecoder,
-    )
-    from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
-
     concrete_device = resolve_concrete_device(device, gpu_id)
     dtype = resolve_dtype(dtype)
     runtime = None
