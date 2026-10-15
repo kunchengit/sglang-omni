@@ -356,7 +356,8 @@ def test_native_image_routes_preserve_generation_controls(api, editing):
     assert options["decoder_steps"] == 8
     assert options["dllm_steps"] == 32
     if editing:
-        assert request.inputs["images"] == [f"data:image/png;base64,{PNG_BASE64}"]
+        source_base64 = base64.b64encode(b"png").decode("ascii")
+        assert request.inputs["images"] == [f"data:image/png;base64,{source_base64}"]
         assert "image_w" not in options
     else:
         assert (options["image_w"], options["image_h"]) == (1024, 768)
