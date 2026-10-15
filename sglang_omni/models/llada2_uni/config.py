@@ -140,7 +140,12 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
 class LLaDA2UniInterleavedPipelineConfig(LLaDA2UniPipelineConfig):
     """Text-only interleaved generation with asynchronous frame decoding."""
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, Any]:
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        **LLaDA2UniPipelineConfig.stage_config_types,
+        IMAGE_DECODE_STAGE: LLaDA2ImageDecoderStageConfig,
+    }
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, object]:
         kwargs = super().stage_factory_kwargs(stage_name)
         if stage_name == IMAGE_DECODE_STAGE:
             kwargs["interleaved_nonterminal"] = True
@@ -179,7 +184,7 @@ class LLaDA2UniInterleavedPipelineConfig(LLaDA2UniPipelineConfig):
                 )
             },
         ),
-        StageConfig(
+        LLaDA2ImageDecoderStageConfig(
             name=IMAGE_DECODE_STAGE,
             process=IMAGE_DECODE_STAGE,
             factory_path=f"{_PKG}.stages.create_image_decode_executor",

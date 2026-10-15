@@ -12,17 +12,9 @@ from sglang_omni.client import Client, ClientError
 from sglang_omni.client.types import GenerateChunk, GenerateRequest, Message
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 
-PNG_BASE64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-)
+PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 JSONValue: TypeAlias = (
-    str
-    | int
-    | float
-    | bool
-    | None
-    | list["JSONValue"]
-    | dict[str, "JSONValue"]
+    str | int | float | bool | None | list["JSONValue"] | dict[str, "JSONValue"]
 )
 
 
@@ -150,7 +142,7 @@ def test_custom_image_chunk_completes() -> None:
     result = asyncio.run(
         client.completion(GenerateRequest(prompt="draw", stream=False), request_id="r1")
     )
-    assert result.image == "cG5n"
+    assert result.image == PNG_BASE64
     assert result.request_id == chunk.request_id == "r1"
 
 

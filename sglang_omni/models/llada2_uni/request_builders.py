@@ -51,12 +51,15 @@ class LLaDA2UniRequest(DllmRequest):
     """LLaDA generation settings shared by request building and unmasking."""
 
     _dllm_steps: int | None = None  # noqa: leading-underscore  # DLLM protocol
-    _task_kind: Literal["chat", "t2i", "edit", "interleaved"] = (
-        "chat"  # noqa: leading-underscore  # DLLM protocol
-    )
+    _task_kind: Literal[
+        "chat", "t2i", "edit", "thinking", "interleaved", "interleaved_image"
+    ] = "chat"  # noqa: leading-underscore  # DLLM protocol
     _cfg_scale: float = 4.0  # noqa: leading-underscore  # DLLM protocol
     _cfg_image_scale: float = 0.0  # noqa: leading-underscore  # DLLM protocol
     _cfg_rescale: float = 0.7  # noqa: leading-underscore  # DLLM protocol
+    _allowed_stop_token_ids: tuple[
+        int, ...
+    ] = ()  # noqa: leading-underscore  # DLLM protocol
 
 
 def build_encoder_request(

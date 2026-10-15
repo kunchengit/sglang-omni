@@ -21,17 +21,9 @@ from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import build_chat_generate_request
 from sglang_omni.serve.protocol import ChatCompletionRequest, ImageGenerationParams
 
-PNG_BASE64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-)
+PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 JSONValue: TypeAlias = (
-    str
-    | int
-    | float
-    | bool
-    | None
-    | list["JSONValue"]
-    | dict[str, "JSONValue"]
+    str | int | float | bool | None | list["JSONValue"] | dict[str, "JSONValue"]
 )
 
 
@@ -45,9 +37,7 @@ class RecordingCoordinator:
     def __init__(self) -> None:
         self.requests: list[OmniRequest] = []
 
-    async def submit(
-        self, request_id: str, request: OmniRequest
-    ) -> ResultPayload:
+    async def submit(self, request_id: str, request: OmniRequest) -> ResultPayload:
         self.requests.append(request)
         return {
             "decode": {

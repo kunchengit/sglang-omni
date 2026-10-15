@@ -113,8 +113,8 @@ class LowConfidenceCFG(DllmAlgorithm):
             num_to_transfer = base + (step < remainder)
             for row, row_logits, row_mask in zip(active_ids, logits, mask):
                 if force_image_only:
-                    allowed_stops = getattr(
-                        req, "_allowed_stop_token_ids", ()
+                    allowed_stops = (
+                        req._allowed_stop_token_ids
                     )  # noqa: leading-underscore  # DLLM protocol
                     stop_logits = row_logits[:, allowed_stops].clone()
                     row_logits[:, : self.image_token_offset] = -torch.inf
