@@ -47,7 +47,7 @@ class LLaDA2UniRequest(DllmRequest):
     """LLaDA generation settings shared by request building and unmasking."""
 
     _dllm_steps: int | None = None  # noqa: leading-underscore  # DLLM protocol
-    _task_kind: Literal["chat", "t2i", "edit", "interleaved"] = (
+    _task_kind: Literal["chat", "t2i", "edit", "thinking", "interleaved"] = (
         "chat"  # noqa: leading-underscore  # DLLM protocol
     )
     _cfg_scale: float = 4.0  # noqa: leading-underscore  # DLLM protocol
