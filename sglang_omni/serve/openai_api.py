@@ -490,6 +490,10 @@ def register_images(
                 **options,
             }
         )
+        if source is not None and params.mode == "thinking":
+            raise ValueError("Thinking mode only supports text-to-image generation")
+        else:
+            pass
         return GenerateRequest(
             model=request.model,
             messages=[Message(role="user", content=request.prompt)],

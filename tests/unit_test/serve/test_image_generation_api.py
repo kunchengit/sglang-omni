@@ -153,7 +153,8 @@ def test_image_input_without_generation_config_remains_chat(
 
 
 @pytest.mark.parametrize(
-    "editing,mode", [(False, "normal"), (False, "thinking"), (True, "normal")]
+    "editing,mode",
+    [(False, "normal"), (False, "thinking"), (True, "normal"), (True, "thinking")],
 )
 def test_native_image_routes_preserve_generation_controls(
     api: tuple[TestClient, RecordingCoordinator],
@@ -181,6 +182,10 @@ def test_native_image_routes_preserve_generation_controls(
         response = client.post(
             "/v1/images/generations", json={**fields, "size": "1024x768"}
         )
+    if editing and mode == "thinking":
+        assert response.status_code == 400, response.text
+        assert not coordinator.requests
+        return
     assert response.status_code == 200, response.text
     assert response.json()["data"][0]["b64_json"] == "cG5n"
     request = coordinator.requests[0]
