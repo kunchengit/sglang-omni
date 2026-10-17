@@ -131,7 +131,6 @@ with TestClient(app) as client:
         {"image_h": 31},
         {"image_w": 33},
         {"mode": "interleaved"},
-        {"mode": "thinking"},
         {"decode_mode": "unknown"},
         {"decode_mode": "normal", "decoder_steps": 1},
     ],
@@ -153,13 +152,18 @@ def test_image_input_without_generation_config_remains_chat(
     assert "image_generation" not in coordinator.requests[0].metadata
 
 
-@pytest.mark.parametrize("editing", [False, True])
+@pytest.mark.parametrize(
+    "editing,mode", [(False, "normal"), (False, "thinking"), (True, "normal")]
+)
 def test_native_image_routes_preserve_generation_controls(
-    api: tuple[TestClient, RecordingCoordinator], editing: bool
+    api: tuple[TestClient, RecordingCoordinator],
+    editing: bool,
+    mode: Literal["normal", "thinking"],
 ) -> None:
     client, coordinator = api
     fields = {
         "prompt": "Make it red",
+        "mode": mode,
         "seed": 0,
         "guidance_scale": 4.0,
         "num_inference_steps": 8,
@@ -184,6 +188,7 @@ def test_native_image_routes_preserve_generation_controls(
     assert request.params["stream"] is False
     assert "choices" not in response.json()
     options = request.metadata["image_generation"]
+    assert options["mode"] == mode
     assert options["seed"] == 0
     assert options["cfg_scale"] == 4.0
     assert options["decoder_steps"] == 8

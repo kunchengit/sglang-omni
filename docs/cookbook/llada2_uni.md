@@ -59,7 +59,7 @@ request = {
     "response_format": "b64_json",
     "decode_mode": "decoder-turbo",
     "num_inference_steps": 8,
-    "dllm_steps": 8,
+    "dllm_steps": 32,
     "guidance_scale": 4.0,
     "seed": 42,
 }
@@ -83,6 +83,7 @@ curl http://localhost:8000/v1/images/edits \
   -F 'response_format=b64_json' \
   -F 'decode_mode=decoder-turbo' \
   -F 'num_inference_steps=8' \
+  -F 'dllm_steps=8' \
   -F 'cfg_text_scale=4.0' -F 'cfg_image_scale=1.5' -F 'seed=42'
 ```
 
@@ -90,22 +91,55 @@ Both routes are non-streaming, support one PNG (`n=1`), and return
 `{id, created, data: [...]}`. `response_format=b64_json` returns raw base64;
 `response_format=url` returns an inline PNG data URL without server-side file
 retention. T2I accepts either `size` or paired `width`/`height`, defaulting to
-1024x1024. Unsupported native sampling controls are rejected rather than ignored.
-The old chat image-generation entrypoint remains available for existing clients.
+1024x1024. Dimensions must be positive multiples of 32; if both forms are
+supplied, they must agree. Unsupported native sampling controls are rejected
+rather than ignored.
+Image endpoints imply image output; no `modalities` field is required.
+`/v1/chat/completions` retains text and image-understanding requests; use the
+image endpoints for T2I and editing.
 
-For thinking T2I, set `mode: "thinking"`. To retrieve both thinking text and
-the image, use `/v1/chat/completions` with `modalities: ["text", "image"]`
-and `image_generation.mode: "thinking"`.
-The text pass has a 2048-token budget and stops at `<boi>`. The image pass
-retains the generated context and applies CFG to the VQ tokens. Both passes
-must fit the thinker's configured context length. Thinking mode does not
-support editing.
+Text-to-image supports `mode: "normal"` and `mode: "thinking"`. Editing supports
+only `mode: "normal"`. Generation mode is separate from `decode_mode`, which
+selects `normal` or `decoder-turbo` diffusion decoding.
+For normal decoding, `num_inference_steps` specifies at least two sampling
+points, giving `num_inference_steps - 1` solver intervals. For decoder-turbo, it specifies at
+least one decoder iteration. The examples use eight turbo iterations.
+When `decode_mode` is omitted, validation uses the decoder factory's configured
+mode, so a turbo factory accepts `num_inference_steps=1` without a mode override.
+
+Common controls include `seed`, `cfg_rescale`, and `dllm_steps`. T2I uses
+`guidance_scale` (the thinker's `cfg_scale`); editing uses `cfg_text_scale` and
+`cfg_image_scale`. `resolution_multiplier` is a decoder factory setting, not a
+request field. Its default value of 2 maps the semantic grid to output pixels.
 
 The server selects a patch-aligned source grid near a 512x512 pixel budget,
 then resizes proportionally and center-crops the image to that grid. Small
 images are enlarged without black padding; images already matching the grid
 are preserved. Aspect ratios beyond 4:1 or 1:4 require additional cropping.
 Image understanding retains its separate preprocessing and pixel budgets.
+
+## Thinking Image Generation
+
+Use the same `POST /v1/images/generations` endpoint with top-level
+`mode: "thinking"`. For example, add it to the T2I request above:
+
+```python
+request["mode"] = "thinking"
+response = requests.post(
+    "http://localhost:8000/v1/images/generations", json=request, timeout=600
+)
+response.raise_for_status()
+Path("thinking.png").write_bytes(
+    base64.b64decode(response.json()["data"][0]["b64_json"])
+)
+```
+
+The thinker first generates text with a 2048-token budget, stopping at
+`<boi>`. It then retains that context and generates the requested VQ grid
+with CFG before image decoding. Both phases must fit the configured context
+length. The native response remains `data[]` containing one PNG; it does not
+expose the thinking text. No `modalities` field is needed. Thinking-mode
+editing is unsupported, and chat completions remain for understanding.
 
 ## Text Input
 
@@ -208,23 +242,23 @@ print(result["choices"][0]["message"]["content"])
 
 ## Request Parameters
 
-The table below lists all parameters accepted by the `/v1/chat/completions` endpoint for LLaDA2.0-Uni.
+The table below lists common text and image-understanding parameters for
+`/v1/chat/completions`.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `model` | string | `null` | Model identifier |
 | `messages` | list | (required) | List of chat messages, each with `role` and `content` |
-| `modalities` | list | `["text"]` | Use `["text"]` for understanding or `["image"]` for generation/editing |
-| `image_generation` | object | `null` | Image generation options shown above |
+| `modalities` | list | `["text"]` | Use `["text"]` for text and image understanding |
 | `images` | list | `null` | List of image file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
 
 ### Incoming Features
 
-- Text-to-Image Generation with Thinking
 - Interleaved Generation
 
 ## Known Limitations
 
 - Image generation and editing return one image per non-streaming request.
-- Interleaved generation is not supported.
+- Thinking mode supports text-to-image only.
+- Interleaved generation is an incoming feature.

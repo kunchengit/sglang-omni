@@ -813,7 +813,7 @@ def test_single_pass_usage_is_unchanged(
     }
 
 
-def test_thinking_edit_is_rejected(preprocessor):
+def test_thinking_edit_is_rejected(preprocessor: LLaDA2Preprocessor) -> None:
     payload = StagePayload(
         request_id="thinking-edit",
         request=OmniRequest(
