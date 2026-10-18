@@ -92,3 +92,10 @@ class StagePayload:
             request=request_obj,
             data=data.get("data"),
         )
+
+
+@dataclass(frozen=True)
+class RoutedPayloads:
+    """A stage result whose route sends each named stage its own payload."""
+
+    payloads: dict[str, StagePayload]
