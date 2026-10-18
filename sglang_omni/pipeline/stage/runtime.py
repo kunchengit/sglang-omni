@@ -59,6 +59,7 @@ from sglang_omni.proto import (
     StreamMessage,
     SubmitMessage,
 )
+from sglang_omni.proto.request import RoutedPayloads
 from sglang_omni.proto.session import find_session_operation
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.message import (
@@ -1790,7 +1791,11 @@ class Stage:
                 await self.send_to_stage(
                     request_id,
                     target,
-                    result,
+                    (
+                        result.payloads[target]
+                        if isinstance(result, RoutedPayloads)
+                        else result
+                    ),
                     allow_local_object=is_single_target,
                     allow_projected_local_object=not is_single_target,
                     stream_targets_for_request=stream_targets_for_request,
