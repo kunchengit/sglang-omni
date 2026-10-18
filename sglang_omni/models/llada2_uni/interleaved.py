@@ -41,16 +41,9 @@ class InterleavedGenerationParams(BaseModel):
 
 def validate_interleaved_inputs(
     messages: list[dict[str, object]],
-    modalities: list[str] | None,
     *,
     has_media: bool,
 ) -> None:
-    if modalities is not None and (
-        len(modalities) != 2 or set(modalities) != {"text", "image"}
-    ):
-        raise ValueError("interleaved generation requires text and image modalities")
-    else:
-        pass
     if has_media:
         raise ValueError("interleaved generation requires text-only input")
     else:

@@ -6,10 +6,8 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
 from pathlib import Path
 from typing import Literal
-from uuid import uuid4
 
 import torch
 from PIL import Image, ImageOps
@@ -26,7 +24,6 @@ from sglang_omni.models.llada2_uni.config import (
 from sglang_omni.models.llada2_uni.interleaved import (
     SYSTEM_PROMPT_INTERLEAVED,
     InterleavedGenerationParams,
-    validate_interleaved_inputs,
 )
 from sglang_omni.models.llada2_uni.payload_types import (
     ImageEncoderInputs,
@@ -293,8 +290,14 @@ def edit_image_pixel_values(
 class LLaDA2Preprocessor:
     """Preprocessor for LLaDA2-Uni model (text + image)."""
 
-    def __init__(self, model_path: str, max_seq_len: int | None = None):
+    def __init__(
+        self,
+        model_path: str,
+        max_seq_len: int | None = None,
+        interleaved: bool = False,
+    ):
         self.max_seq_len = max_seq_len
+        self.interleaved = interleaved
         self.model_dir = resolve_local_model_dir(model_path)
         self.tokenizer = load_llada2_tokenizer(model_path)
 
@@ -360,23 +363,15 @@ class LLaDA2Preprocessor:
             isinstance(image_generation, dict)
             and image_generation.get("mode") == "interleaved"
         ):
-            config = InterleavedGenerationParams.model_validate(image_generation)
-            if request.params.get("stream", False):
-                raise ValueError("Interleaved generation requires stream=false")
+            if not self.interleaved:
+                raise ValueError(
+                    "Interleaved generation needs the interleaved pipeline, "
+                    "sgl-omni serve --variant interleaved"
+                )
             else:
                 pass
-            validate_interleaved_inputs(
-                messages,
-                metadata.get("output_modalities"),
-                has_media=bool(raw_images)
-                or (
-                    isinstance(raw_inputs, dict)
-                    and bool(raw_inputs.get("audios") or raw_inputs.get("videos"))
-                ),
-            )
+            config = InterleavedGenerationParams.model_validate(image_generation)
             task_kind = "interleaved"
-            metadata = {**metadata, "interleaved_generation_id": uuid4().hex}
-            request = replace(request, metadata=metadata)
         elif isinstance(image_generation, dict):
             task_kind = "edit" if raw_images else "t2i"
         else:

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Interleaved transitions, frame CFG, and EOI stopping."""
+"""Interleaved transitions, frame CFG, EOI stopping, and the UMM adapter."""
 
 import asyncio
 from types import SimpleNamespace
@@ -10,8 +10,11 @@ from sglang_omni.models.llada2_uni.components.preprocessor import (
     IMAGE_TOKEN_OFFSET,
     LLaDA2Preprocessor,
 )
+from sglang_omni.models.llada2_uni.config import LLaDA2UniInterleavedPipelineConfig
 from sglang_omni.models.llada2_uni.interleaved import advance_interleaved_state
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
+from sglang_omni.models.llada2_uni.umm import LLaDA2UniUMMAdapter
+from sglang_omni.pipeline.umm import UMMContext, UMMOutput, UMMRequestError
 from sglang_omni.proto import OmniRequest, StagePayload
 
 
@@ -44,17 +47,22 @@ CONFIG = {
 }
 
 
-def initial_payload():
+STORY = [{"role": "user", "content": "Illustrate a three-frame story"}]
+
+
+def preprocess(request, interleaved=True):
     preprocessor = object.__new__(LLaDA2Preprocessor)
     preprocessor.tokenizer = Tokenizer()
     preprocessor.max_seq_len = 8192
-    request = OmniRequest(
-        inputs=[{"role": "user", "content": "Illustrate a three-frame story"}],
-        params={"stream": False},
-        metadata={"image_generation": CONFIG},
-    )
+    preprocessor.interleaved = interleaved
     return asyncio.run(
         preprocessor(StagePayload(request_id="story", request=request, data={}))
+    )
+
+
+def initial_payload():
+    return preprocess(
+        OmniRequest(inputs=STORY, params={}, metadata={"image_generation": CONFIG})
     )
 
 
@@ -123,3 +131,99 @@ def test_frame_cfg_preserves_unconditional_and_history_branches(scale, mode):
     plan = state.stream_state["interleaved"]["cfg_plan"]
     assert plan["mode"] == ("editing" if scale > 0 else "simple")
     assert len(plan["branches"]) == (2 if scale > 0 else 1)
+
+
+def think(dispatch, ids):
+    """One thinker pass, as the stage runs it on the dispatched state."""
+    state = LLaDA2UniPipelineState.from_dict(dispatch.request.inputs)
+    state.stream_state["interleaved"].pop("emit_frame", None)
+    advance(state, ids)
+    return state.to_dict()
+
+
+def image(name):
+    return {"kind": "image", "url": f"data:image/png;base64,{name}"}
+
+
+def umm_context(max_frames=3):
+    request = OmniRequest(
+        inputs=STORY,
+        params={"stage_params": {"orchestrator": {"max_frames": max_frames}}},
+        metadata={},
+    )
+    return UMMContext("story", request, deadline=60.0, remaining_dispatches=32)
+
+
+def test_frames_decode_while_the_thinker_writes_and_segments_keep_model_order():
+    adapter = LLaDA2UniUMMAdapter("m")
+    context = umm_context()
+    step = adapter.start(context)
+    assert step.phase == "prepare"
+    step = adapter.advance(context, "prepare", preprocess(step.request).data)
+    (text_phase,) = step.dispatches
+
+    header, frame = [71, 10, 22, 23, 12], [IMAGE_TOKEN_OFFSET + i for i in range(6)]
+    step = adapter.advance(context, "think", think(text_phase, header))
+    assert step.outputs == (UMMOutput("text", "71"),)
+    step = adapter.advance(context, "think", think(step.dispatches[0], frame + [11]))
+    thinker, decode = step.dispatches
+    assert (thinker.phase, decode.phase) == ("think", "decode")
+
+    # The next text waits behind the first image, and the second frame waits
+    # for the decoder, which runs one frame of a request at a time.
+    step = adapter.advance(context, "think", think(thinker, [72, 10, 22, 23, 12]))
+    assert step.outputs == ()
+    step = adapter.advance(context, "think", think(step.dispatches[0], frame + [11]))
+    assert [dispatch.phase for dispatch in step.dispatches] == ["think"]
+    step = adapter.advance(context, "think", think(step.dispatches[0], [75, 2]))
+    assert step.outputs == () and step.dispatches == ()
+
+    step = adapter.advance(context, "decode", image("first"))
+    assert step.outputs == (
+        UMMOutput("image", image("first")),
+        UMMOutput("text", "72"),
+    )
+    (second,) = step.dispatches
+    frames = [d.request.inputs["stream_state"]["interleaved"] for d in (decode, second)]
+    assert second.phase == "decode"
+    assert [frame["frame_index"] for frame in frames] == [1, 2]
+    step = adapter.advance(context, "decode", image("second"))
+    assert step.outputs == (
+        UMMOutput("image", image("second")),
+        UMMOutput("text", "75"),
+    )
+    assert step.dispatches == () and adapter.usage(context) == 0
+    adapter.close(context, "completed")
+    assert not adapter.runs
+
+
+def test_interleaved_variant_runs_the_adapter_and_refuses_what_it_cannot_serve(
+    monkeypatch,
+):
+    from sglang_omni.config import manager
+    from sglang_omni.config.runtime import resolve_stage_typed_kwargs
+    from sglang_omni.models.llada2_uni.config import LLaDA2UniPipelineConfig
+    from sglang_omni.pipeline.umm import create_umm_controller
+
+    monkeypatch.setattr(
+        manager, "resolve_config_cls_for_model_path", lambda _: LLaDA2UniPipelineConfig
+    )
+    config = manager.ConfigManager.from_model_path("m", "interleaved").config
+    assert type(config) is LLaDA2UniInterleavedPipelineConfig
+    args = {
+        **resolve_stage_typed_kwargs(config.stage_named("orchestrator")),
+        **config.stage_factory_kwargs("orchestrator"),
+    }
+    umm = create_umm_controller("m", **args)
+    assert isinstance(umm.adapter, LLaDA2UniUMMAdapter)
+    umm.stop()
+
+    with pytest.raises(UMMRequestError, match="max_frames=11 needs 35 phases"):
+        LLaDA2UniUMMAdapter("m").start(umm_context(max_frames=11))
+    context = umm_context()
+    context.request.inputs = {"messages": STORY, "images": ["cat.png"]}
+    with pytest.raises(UMMRequestError, match="text-only input"):
+        LLaDA2UniUMMAdapter("m").start(context)
+    request = OmniRequest(STORY, {}, {"image_generation": CONFIG})
+    with pytest.raises(ValueError, match="--variant interleaved"):
+        preprocess(request, interleaved=False)
