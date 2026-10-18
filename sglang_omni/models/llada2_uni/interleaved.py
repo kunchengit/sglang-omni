@@ -4,53 +4,79 @@
 from __future__ import annotations
 
 import copy
-import queue
 import re
-import threading
-from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Literal
 
 import torch
+from pydantic import BaseModel, ConfigDict, Field
 from transformers import PreTrainedTokenizerBase
 
-from sglang_omni.models.llada2_uni.config import (
-    IMAGE_DECODE_STAGE,
-    INTERLEAVED_COLLECT_STAGE,
-    THINKER_STAGE,
-)
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
-from sglang_omni.proto import StagePayload
-from sglang_omni.proto.segments import InterleavedGenerationParams
-from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
 SYSTEM_PROMPT_INTERLEAVED = "You are a interleaved generation assistant."
 UNCONDITION_TOKEN = "<uncondition>"
 
 
-def project_interleaved_payload(payload: StagePayload) -> StagePayload:
-    """Give the thinker and asynchronous decoder independent frame snapshots."""
-    return StagePayload(
-        request_id=payload.request_id,
-        request=payload.request,
-        data=copy.deepcopy(payload.data),
-    )
+class InterleavedGenerationParams(BaseModel):
+    """Controls for text-only interleaved image generation."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, strict=True)
+
+    mode: Literal["interleaved"]
+    max_frames: int = Field(default=10, ge=1)
+    text_max_new_tokens: int = Field(default=8192, ge=1)
+    image_max_new_tokens: int = Field(default=1500, ge=1)
+    dllm_steps: int = Field(default=32, ge=1)
+    cfg_scale: float = Field(default=0.0, ge=0.0)
+    cfg_text_scale: float = Field(default=7.5, ge=0.0)
+    cfg_image_scale: float = Field(default=1.5, ge=0.0)
+    cfg_rescale: float = Field(default=0.7, ge=0.0, le=1.0)
+    decoder_steps: int | None = Field(default=None, ge=1)
+    seed: int | None = Field(default=None, ge=0)
+    max_image_tokens: int = Field(default=4096, ge=1)
+    format: Literal["png"] = "png"
+    decode_mode: Literal["normal", "decoder-turbo"] = "normal"
 
 
-def interleaved_next(request_id: str, output: StagePayload) -> str | list[str]:
-    interleaved = output.data["stream_state"]["interleaved"]
-    if interleaved.get("emit_frame"):
-        return [
-            IMAGE_DECODE_STAGE,
-            INTERLEAVED_COLLECT_STAGE if interleaved.get("done") else THINKER_STAGE,
-        ]
+def validate_interleaved_inputs(
+    messages: list[dict[str, object]],
+    modalities: list[str] | None,
+    *,
+    has_media: bool,
+) -> None:
+    if modalities is not None and (
+        len(modalities) != 2 or set(modalities) != {"text", "image"}
+    ):
+        raise ValueError("interleaved generation requires text and image modalities")
     else:
         pass
-    if interleaved.get("done"):
-        return INTERLEAVED_COLLECT_STAGE
+    if has_media:
+        raise ValueError("interleaved generation requires text-only input")
     else:
         pass
-    return THINKER_STAGE
+    for message in messages:
+        if not isinstance(message, dict):
+            raise ValueError("interleaved generation requires chat messages")
+        else:
+            pass
+        content = message.get("content", "")
+        if isinstance(content, str):
+            continue
+        else:
+            pass
+        if not isinstance(content, list) or any(
+            not isinstance(part, str)
+            and not (
+                isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+            )
+            for part in content
+        ):
+            raise ValueError("interleaved generation requires text-only input")
+        else:
+            pass
 
 
 @dataclass(frozen=True)
@@ -450,153 +476,3 @@ def advance_interleaved_state(
     else:
         raise ValueError(f"unsupported interleaved phase {completed_phase!r}")
     state.__dict__.update(working.__dict__)
-
-
-class InterleavedCollectorScheduler:
-    """Join independently decoded frames with the final thinker state."""
-
-    TOMBSTONE_LIMIT = 4096
-
-    def __init__(self) -> None:
-        self.inbox: queue.Queue[IncomingMessage] = queue.Queue()
-        self.outbox: queue.Queue[OutgoingMessage] = queue.Queue()
-        self.requires_tp_work_fanout = False
-        self.allow_multiple_inflight_per_request = False
-        self.running = False
-        self.lock = threading.Lock()
-        self.closed: OrderedDict[tuple[str, str | None], None] = OrderedDict()
-        self.frames: dict[tuple[str, str], dict[int, dict[str, object]]] = {}
-        self.final_payloads: dict[tuple[str, str], StagePayload] = {}
-
-    def start(self) -> None:
-        self.running = True
-        while self.running:
-            try:
-                message = self.inbox.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            if message.type == "new_request":
-                try:
-                    with self.lock:
-                        self.receive(message.request_id, message.data)
-                except Exception as exc:
-                    self.outbox.put(
-                        OutgoingMessage(
-                            request_id=message.request_id, type="error", data=exc
-                        )
-                    )
-            else:
-                pass
-
-    def stop(self) -> None:
-        self.running = False
-
-    def close_request(self, key: tuple[str, str | None]) -> None:
-        self.frames.pop(key, None)
-        self.final_payloads.pop(key, None)
-        self.closed[key] = None
-        self.closed.move_to_end(key)
-        while len(self.closed) > self.TOMBSTONE_LIMIT:
-            self.closed.popitem(last=False)
-
-    def abort(self, request_id: str) -> None:
-        with self.lock:
-            for key in self.frames.keys() | self.final_payloads.keys():
-                if key[0] == request_id:
-                    self.close_request(key)
-                else:
-                    pass
-            self.close_request((request_id, None))
-
-    def receive(self, request_id: str, payload: StagePayload) -> None:
-        if (request_id, None) in self.closed:
-            return
-        else:
-            pass
-        key = (request_id, payload.request.metadata["interleaved_generation_id"])
-        if key in self.closed:
-            return
-        else:
-            pass
-        try:
-            data = payload.data
-            if data.get("kind") == "interleaved_frame":
-                frame = data["frame"]
-                frames = self.frames.setdefault(key, {})
-                index = frame["index"]
-                if index <= 0 or index in frames:
-                    raise ValueError(f"invalid or duplicate decoded frame {index}")
-                else:
-                    pass
-                frames[index] = frame["image"]
-            else:
-                state = LLaDA2UniPipelineState.from_dict(data)
-                if (
-                    state.task_kind != "interleaved"
-                    or not state.stream_state["interleaved"]["done"]
-                ):
-                    raise ValueError(
-                        "collector received a non-final interleaved payload"
-                    )
-                else:
-                    pass
-                if key in self.final_payloads:
-                    raise ValueError("duplicate interleaved final payload")
-                else:
-                    pass
-                self.final_payloads[key] = payload
-            self.maybe_finish(key)
-        except Exception:
-            self.close_request(key)
-            raise
-
-    def maybe_finish(self, key: tuple[str, str]) -> None:
-        payload = self.final_payloads.get(key)
-        if payload is None:
-            return
-        else:
-            pass
-        state = LLaDA2UniPipelineState.from_dict(payload.data)
-        interleaved = state.stream_state["interleaved"]
-        expected = interleaved["frame_index"]
-        frames = self.frames.get(key, {})
-        expected_indexes = set(range(1, expected + 1))
-        if set(frames) - expected_indexes:
-            raise ValueError("collector received an unexpected interleaved frame")
-        else:
-            pass
-        if set(frames) != expected_indexes:
-            return
-        else:
-            pass
-
-        content: list[dict[str, object]] = []
-        images: list[dict[str, object]] = []
-        for index, segment in enumerate(interleaved["segments"], 1):
-            if segment["text"]:
-                content.append({"type": "text", "text": segment["text"]})
-            else:
-                pass
-            image = frames[index]
-            images.append(image)
-            content.append({"type": "image_ref", "image_id": image["id"]})
-        trailing_text = interleaved.get("trailing_text", "")
-        if trailing_text:
-            content.append({"type": "text", "text": trailing_text})
-        else:
-            pass
-        payload.data = {
-            "modality": "interleaved",
-            "content": content,
-            "images": images,
-            "finish_reason": interleaved["finish_reason"],
-            "usage": interleaved["usage"],
-        }
-        self.outbox.put(OutgoingMessage(request_id=key[0], type="result", data=payload))
-        self.close_request(key)
-
-
-def create_interleaved_collector_executor(
-    model_path: str,
-) -> InterleavedCollectorScheduler:
-    return InterleavedCollectorScheduler()

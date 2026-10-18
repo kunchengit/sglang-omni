@@ -1,28 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Interleaved transitions, asynchronous collection, and EOI stopping."""
+"""Interleaved transitions, frame CFG, and EOI stopping."""
 
 import asyncio
-from queue import Empty
 from types import SimpleNamespace
 
 import pytest
 
-from sglang_omni.config.manager import ConfigManager
-from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.llada2_uni.components.preprocessor import (
     IMAGE_TOKEN_OFFSET,
     LLaDA2Preprocessor,
 )
-from sglang_omni.models.llada2_uni.interleaved import (
-    InterleavedCollectorScheduler,
-    advance_interleaved_state,
-    interleaved_next,
-    project_interleaved_payload,
-)
-from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
+from sglang_omni.models.llada2_uni.interleaved import advance_interleaved_state
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.proto.segments import normalize_interleaved_content
 
 
 class Tokenizer:
@@ -54,25 +44,6 @@ CONFIG = {
 }
 
 
-def test_decoder_keeps_multiple_frames_after_config_overrides(tmp_path):
-    config_path = tmp_path / "interleaved.yaml"
-    config_path.write_text(
-        "config_cls: LLaDA2UniInterleavedPipelineConfig\n"
-        "model_path: /model\n"
-        "stages:\n"
-        "  image_decode:\n"
-        "    factory:\n"
-        "      backend: sglang\n"
-        "      num_steps: 8\n"
-    )
-    config = ConfigManager.from_file(str(config_path)).config
-    decoder = next(stage for stage in config.stages if stage.name == "image_decode")
-    kwargs = resolve_stage_factory_args(decoder, config, gpu_id=0)
-    assert kwargs["interleaved_nonterminal"] is True
-    assert kwargs["backend"] == "sglang"
-    assert kwargs["num_steps"] == 8
-
-
 def initial_payload():
     preprocessor = object.__new__(LLaDA2Preprocessor)
     preprocessor.tokenizer = Tokenizer()
@@ -92,133 +63,6 @@ def advance(state, ids):
     advance_interleaved_state(
         state, Tokenizer(), completed_phase=state.stream_state["interleaved"]["phase"]
     )
-
-
-@pytest.mark.parametrize("final_first", [False, True])
-def test_three_frames_continue_before_decoding_and_collect_in_order(final_first):
-    payload = initial_payload()
-    state = LLaDA2UniPipelineState.from_dict(payload.data)
-    frames = []
-    for index in range(1, 4):
-        advance(state, [70 + index, 10, 22, 23, 12])
-        assert state.stream_state["interleaved"]["cfg_plan"]["mode"] == (
-            "simple" if index == 1 else "editing"
-        )
-        advance(state, [IMAGE_TOKEN_OFFSET, IMAGE_TOKEN_OFFSET + 1])
-        advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(2, 6)] + [11])
-        payload.data = state.to_dict()
-        assert interleaved_next("story", payload) == [
-            "image_decode",
-            "interleaved_collect" if index == 3 else "thinker",
-        ]
-        frames.append(project_interleaved_payload(payload))
-        assert extract_image_vq_tokens(state) == (list(range(6)), 2, 3, CONFIG)
-        if index < 3:
-            state.stream_state["interleaved"].pop("emit_frame")
-    assert [
-        frame.data["stream_state"]["interleaved"]["frame_index"] for frame in frames
-    ] == [1, 2, 3]
-
-    collector = InterleavedCollectorScheduler()
-    if final_first:
-        collector.receive("story", project_interleaved_payload(payload))
-    for frame in reversed(frames):
-        index = frame.data["stream_state"]["interleaved"]["frame_index"]
-        frame.data = {
-            "kind": "interleaved_frame",
-            "frame": {
-                "index": index,
-                "image": {
-                    "id": f"image-{index}",
-                    "data": "cG5n",
-                    "format": "png",
-                    "width": 64,
-                    "height": 96,
-                },
-            },
-        }
-        collector.receive("story", frame)
-    if not final_first:
-        collector.receive("story", project_interleaved_payload(payload))
-    result = collector.outbox.get_nowait().data.data
-    assert [part.get("text", part.get("image_id")) for part in result["content"]] == [
-        "71",
-        "image-1",
-        "72",
-        "image-2",
-        "73",
-        "image-3",
-    ]
-    assert result["finish_reason"] == "max_frames"
-    assert result["usage"]["completion_tokens"] == 36
-    normalize_interleaved_content(result["content"], result["images"])
-    collector.receive("story", frames[0])
-    collector.abort("aborted")
-    collector.receive("aborted", frames[0])
-    assert not collector.frames and not collector.final_payloads
-    with pytest.raises(Empty):
-        collector.outbox.get_nowait()
-
-
-def test_text_only_completion_and_duplicate_frame_cleanup():
-    payload = initial_payload()
-    state = LLaDA2UniPipelineState.from_dict(payload.data)
-    advance(state, [75, 2])
-    payload.data = state.to_dict()
-    collector = InterleavedCollectorScheduler()
-    collector.receive("story", payload)
-    result = collector.outbox.get_nowait().data.data
-    assert result["content"] == [{"type": "text", "text": "75"}]
-    assert result["images"] == []
-    frame = StagePayload(
-        request_id="bad",
-        request=payload.request,
-        data={"kind": "interleaved_frame", "frame": {"index": 1, "image": {}}},
-    )
-    collector.receive("bad", frame)
-    with pytest.raises(ValueError, match="duplicate"):
-        collector.receive("bad", frame)
-    collector.receive("bad", frame)
-    assert not collector.frames and not collector.final_payloads
-
-
-def test_completed_request_id_reuse_ignores_old_frames_and_preserves_abort() -> None:
-    collector = InterleavedCollectorScheduler()
-    previous: list[StagePayload] = []
-    for generation in range(3):
-        payload = initial_payload()
-        state = LLaDA2UniPipelineState.from_dict(payload.data)
-        state.stream_state["interleaved"]["max_frames"] = 1
-        advance(state, [71, 10, 22, 23, 12])
-        advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(6)] + [11])
-        payload.data = state.to_dict()
-        final = project_interleaved_payload(payload)
-        frame = StagePayload(
-            request_id="story",
-            request=payload.request,
-            data={
-                "kind": "interleaved_frame",
-                "frame": {"index": 1, "image": {"id": f"image-{generation}"}},
-            },
-        )
-        frame = StagePayload.from_dict(frame.to_dict())
-        collector.receive("story", frame)
-        for old_payload in previous:
-            collector.receive("story", project_interleaved_payload(old_payload))
-        assert collector.outbox.empty()
-        if generation == 2:
-            collector.abort("story")
-        collector.receive("story", project_interleaved_payload(final))
-        collector.receive("story", frame)
-        if generation == 2:
-            assert collector.outbox.empty()
-        else:
-            result = collector.outbox.get_nowait()
-            assert result.request_id == "story"
-            assert result.data.data["images"] == [{"id": f"image-{generation}"}]
-            assert collector.outbox.empty()
-        assert not collector.frames and not collector.final_payloads
-        previous.extend([frame, final])
 
 
 def test_image_request_uses_current_cfg_and_eoi_only_stopping():

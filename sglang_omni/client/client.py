@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 import uuid
 from collections.abc import Mapping
 from contextlib import aclosing
@@ -34,17 +32,15 @@ from sglang_omni.client.types import (
     GenerateChunk,
     GenerateRequest,
     SpeechResult,
+    UMMCompletionResult,
+    UMMCompletionStreamChunk,
+    UMMGenerateChunk,
+    UMMSegment,
     UsageInfo,
 )
 from sglang_omni.pipeline.coordinator import Coordinator, CoordinatorHealth
 from sglang_omni.proto import OmniRequest, RequestState, StreamMessage
 from sglang_omni.proto.admin import AdminResponse
-from sglang_omni.proto.segments import (
-    InterleavedGenerationParams,
-    UMMSegment,
-    normalize_interleaved_content,
-    validate_interleaved_inputs,
-)
 from sglang_omni.proto.session import (
     OutputChunk,
     SessionIdentity,
@@ -173,10 +169,6 @@ class Client:
         request: GenerateRequest,
         request_id: str | None = None,
     ) -> AsyncIterator[GenerateChunk]:
-        if request.stream:
-            validate_image_streaming(request)
-        else:
-            pass
         req_id = request_id or str(uuid.uuid4())
         omni_request = self.build_omni_request(request)
         if request.stream:
@@ -223,15 +215,21 @@ class Client:
         omni_rollout: dict[str, object] | None = None
         weight_version: str | None = None
         language: str | None = None
+        streamed_segments: list[UMMSegment] | None = None
         image_base64: str | None = None
-        content: list[dict[str, object]] | None = None
-        images: list[dict[str, object]] = []
-        segments: list[UMMSegment] | None = None
 
         async for chunk in self.generate(request, request_id=request_id):
             last_chunk = chunk
             if chunk.text:
                 text_parts.append(chunk.text)
+            else:
+                pass
+            if isinstance(chunk, UMMGenerateChunk) and chunk.segment is not None:
+                if streamed_segments is None:
+                    streamed_segments = []
+                else:
+                    pass
+                streamed_segments.append(chunk.segment)
             else:
                 pass
             if chunk.audio_data is not None:
@@ -244,15 +242,6 @@ class Client:
                 pass
             if chunk.image is not None:
                 image_base64 = chunk.image
-            else:
-                pass
-            if chunk.content is not None:
-                content = chunk.content
-                images = chunk.images
-            else:
-                pass
-            if chunk.segments is not None:
-                segments = chunk.segments
             else:
                 pass
             if chunk.finish_reason is not None:
@@ -283,7 +272,13 @@ class Client:
             pass
 
         full_text = "".join(text_parts)
-        stop_start = stop_string_start(full_text, request.sampling.stop)
+        # Stop strings never apply to an interleaved result, whose text the
+        # adapter builds from its decisions, so the text matches the segments.
+        stop_start = (
+            None
+            if isinstance(last_chunk, UMMGenerateChunk)
+            else stop_string_start(full_text, request.sampling.stop)
+        )
         if stop_start is not None:
             full_text = full_text[:stop_start]
         else:
@@ -310,10 +305,11 @@ class Client:
         else:
             pass
 
-        return CompletionResult(
+        result = CompletionResult(
             request_id=request_id,
             text=full_text,
             audio=audio,
+            media=last_chunk.media,
             finish_reason=finish_reason or "stop",
             usage=last_chunk.usage,
             output_token_logprobs=(
@@ -324,10 +320,15 @@ class Client:
             language=language,
             diarization=last_chunk.diarization,
             image=image_base64,
-            content=content,
-            images=images,
-            segments=segments,
         )
+        if isinstance(last_chunk, UMMGenerateChunk):
+            return UMMCompletionResult(
+                **vars(result),
+                segments=completed_segments(last_chunk, streamed_segments),
+            )
+        else:
+            pass
+        return result
 
     # ------------------------------------------------------------------
     # High-level: streaming completion
@@ -345,7 +346,6 @@ class Client:
         Audio data is base64-encoded before yielding so that callers never
         need to touch numpy / raw bytes.
         """
-        validate_image_streaming(request)
         streamed_text = ""
         stop_trimmer = (
             StreamedStopTrimmer(stop=request.sampling.stop)
@@ -375,7 +375,12 @@ class Client:
                         pass
                 else:
                     pass
-                if stop_trimmer is not None and chunk.modality == "text" and text:
+                if (
+                    stop_trimmer is not None
+                    and chunk.modality == "text"
+                    and text
+                    and not isinstance(chunk, UMMGenerateChunk)
+                ):
                     text = stop_trimmer.push(text) or None
                 else:
                     pass
@@ -392,7 +397,7 @@ class Client:
                 else:
                     pass
 
-                yield CompletionStreamChunk(
+                stream_chunk = CompletionStreamChunk(
                     request_id=request_id,
                     text=text,
                     modality=chunk.modality,
@@ -401,6 +406,13 @@ class Client:
                     usage=chunk.usage,
                     stage_name=chunk.stage_name,
                 )
+                if isinstance(chunk, UMMGenerateChunk):
+                    stream_chunk = UMMCompletionStreamChunk(
+                        **vars(stream_chunk), segment=chunk.segment
+                    )
+                else:
+                    pass
+                yield stream_chunk
             held_text = stop_trimmer.finish() if stop_trimmer is not None else ""
             if held_text:
                 yield CompletionStreamChunk(
@@ -710,29 +722,6 @@ class Client:
             metadata["output_modalities"] = request.output_modalities
         else:
             pass
-        image_generation = metadata.get("image_generation")
-        if (
-            isinstance(image_generation, dict)
-            and image_generation.get("mode") == "interleaved"
-        ):
-            config = InterleavedGenerationParams.model_validate(image_generation)
-            metadata["image_generation"] = config.model_dump(exclude_none=True)
-            if isinstance(inputs, list):
-                messages = inputs
-                has_media = False
-            elif isinstance(inputs, dict):
-                messages = inputs.get("messages", [])
-                has_media = bool(
-                    inputs.get("images") or inputs.get("audios") or inputs.get("videos")
-                )
-            else:
-                raise ValueError("interleaved generation requires chat messages")
-            validate_interleaved_inputs(
-                messages, metadata.get("output_modalities"), has_media=has_media
-            )
-            metadata["output_modalities"] = ["text", "image"]
-        else:
-            pass
         return OmniRequest(inputs=inputs, params=params, metadata=metadata)
 
     @staticmethod
@@ -746,6 +735,10 @@ class Client:
         else:
             pass
         if isinstance(result, dict):
+            if result.get("type") == "umm_result":
+                return umm_result_chunk(request_id, result)
+            else:
+                pass
             # Multi-terminal merged result, e.g. decode + code2wav/talker/
             # talker_stream, or decode + image_decode.
             audio_result = None
@@ -822,6 +815,7 @@ class Client:
                 )
             else:
                 pass
+            chunk.media = result.get("media")
             chunk.stage_id = result.get("stage_id")
             chunk.stage_name = result.get("stage_name")
             modality = result.get("modality")
@@ -835,40 +829,6 @@ class Client:
             else:
                 pass
             Client.set_audio_data(chunk, result)
-            if result.get("modality") == "interleaved":
-                chunk.images = list(result.get("images", []))
-                chunk.content = normalize_interleaved_content(
-                    result["content"], chunk.images
-                )
-                chunk.text = "".join(
-                    part["text"] for part in chunk.content if part["type"] == "text"
-                )
-                images_by_id = {image["id"]: image for image in chunk.images}
-                chunk.segments = []
-                for index, part in enumerate(chunk.content):
-                    segment: UMMSegment = {
-                        "type": "segment",
-                        "session_id": request_id,
-                        "segment_index": index,
-                        "kind": "text",
-                        "data": "",
-                    }
-                    if part["type"] == "text":
-                        segment["data"] = part["text"]
-                    else:
-                        image = images_by_id[part["image_id"]]
-                        image_bytes = base64.b64decode(image["data"], validate=True)
-                        segment["kind"] = "image"
-                        segment["data"] = {
-                            "kind": "image",
-                            "mime_type": "image/png",
-                            "url": f"data:image/png;base64,{image['data']}",
-                            "sha256": hashlib.sha256(image_bytes).hexdigest(),
-                            "size_bytes": len(image_bytes),
-                        }
-                    chunk.segments.append(segment)
-            else:
-                pass
             if result.get("image") is not None:
                 chunk.image = result["image"]
                 chunk.modality = "image"
@@ -921,6 +881,10 @@ class Client:
         else:
             pass
         if isinstance(data, dict):
+            if data.get("type") == "segment":
+                return umm_segment_chunk(chunk, data)
+            else:
+                pass
             text = data.get("text")
             if isinstance(text, str):
                 chunk.text = text
@@ -995,23 +959,6 @@ class Client:
             pass
         chunk.text = str(data)
         return chunk
-
-
-def validate_image_streaming(request: GenerateRequest) -> None:
-    """Reject image output on the streaming client path."""
-    modalities = (
-        request.output_modalities
-        if request.output_modalities is not None
-        else request.metadata.get("output_modalities")
-    )
-    if request.metadata.get("image_generation") is not None or "image" in (
-        modalities or []
-    ):
-        raise ClientError(
-            "Image generation does not support streaming; set stream=false"
-        )
-    else:
-        pass
 
 
 def extract_inputs(request: GenerateRequest) -> object:
@@ -1091,6 +1038,70 @@ def extract_inputs(request: GenerateRequest) -> object:
     else:
         pass
     return messages
+
+
+def umm_segment_chunk(chunk: GenerateChunk, data: dict[str, object]) -> GenerateChunk:
+    """Carry one streamed segment of an interleaved (UMM) request."""
+    segment = UMMSegment.from_dict(data)
+    return UMMGenerateChunk(
+        request_id=chunk.request_id,
+        index=segment.segment_index,
+        text=segment.data if segment.kind == "text" else "",
+        stage_id=chunk.stage_id,
+        stage_name=chunk.stage_name,
+        modality=segment.kind,
+        segment=segment,
+    )
+
+
+def umm_result_chunk(request_id: str, result: dict[str, object]) -> GenerateChunk:
+    """Validate the final result of an interleaved (UMM) request."""
+    raw_segments = result.get("segments")
+    execution_id = result.get("execution_id")
+    if not isinstance(raw_segments, list) or not isinstance(execution_id, str):
+        raise ValueError("Invalid UMM final result")
+    else:
+        pass
+    segments = [UMMSegment.from_dict(item) for item in raw_segments]
+    if any(
+        segment.execution_id != execution_id or segment.segment_index != index
+        for index, segment in enumerate(segments)
+    ):
+        raise ValueError("UMM final segments must be one ordered execution")
+    else:
+        pass
+    finish_reason = result.get("finish_reason")
+    return UMMGenerateChunk(
+        request_id=request_id,
+        text="".join(
+            segment.data
+            for segment in segments
+            if segment.kind == "text" and isinstance(segment.data, str)
+        ),
+        finish_reason=finish_reason if isinstance(finish_reason, str) else "stop",
+        model_finish_reason="",
+        modality="mixed",
+        segments=segments,
+    )
+
+
+def completed_segments(
+    final: UMMGenerateChunk, streamed: list[UMMSegment] | None
+) -> list[UMMSegment]:
+    """The final segments with their data, taken from the stream when streamed."""
+    segments = final.segments or []
+    if all(segment.data is not None for segment in segments):
+        return segments
+    elif streamed is not None and [
+        (segment.execution_id, segment.segment_index, segment.kind)
+        for segment in streamed
+    ] == [
+        (segment.execution_id, segment.segment_index, segment.kind)
+        for segment in segments
+    ]:
+        return streamed
+    else:
+        raise ValueError("Streamed UMM segments do not match the final result")
 
 
 def build_params(request: GenerateRequest) -> dict[str, object]:

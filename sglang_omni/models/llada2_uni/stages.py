@@ -266,7 +266,6 @@ def create_image_decode_executor(
     resolution_multiplier: int = 2,
     backend: DecoderBackend = "diffusers",
     attention_backend: str = "torch_sdpa",
-    interleaved_nonterminal: bool = False,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     concrete_device = resolve_concrete_device(device, gpu_id)
     dtype = resolve_dtype(dtype)
@@ -372,12 +371,6 @@ def create_image_decode_executor(
         return payload
 
     if runtime is None:
-        if interleaved_nonterminal:
-            return SimpleScheduler(
-                decode_image, allow_multiple_inflight_per_request=True
-            )
-        else:
-            pass
         return SimpleScheduler(decode_image)
     else:
         pass
@@ -390,10 +383,4 @@ def create_image_decode_executor(
                 # Shutdown callbacks run before the compute thread has exited.
                 runtime.close()
 
-    if interleaved_nonterminal:
-        return ImageDecoderScheduler(
-            decode_image, allow_multiple_inflight_per_request=True
-        )
-    else:
-        pass
     return ImageDecoderScheduler(decode_image)

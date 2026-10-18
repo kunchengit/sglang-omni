@@ -16,6 +16,7 @@ import os
 import queue as _queue_mod
 import threading
 from collections.abc import Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import replace
 from typing import Awaitable, Callable, Literal
@@ -63,8 +64,10 @@ from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.message import (
     IncomingMessage,
     OutgoingMessage,
+    ResultOwningScheduler,
     StageScheduler,
 )
+from sglang_omni.serve.stage_routes import StageHttpServer, StageRoutesError
 
 TorchProfiler = current_platform.get_torch_profiler()
 
@@ -130,15 +133,24 @@ class Stage:
         tp_fanout: TPLeaderFanout | None = None,
         is_terminal: bool = False,
         replica_topology: dict[str, list[str]] | None = None,
+        allow_child_processes: bool = False,
+        http_socket_path: str | None = None,
     ) -> None:
         self.name = name
         self.role = role
         self.get_next = get_next
         self.gpu_id = gpu_id
+        # The host of a native engine that owns subprocesses never computes on
+        # the device itself, so its threads do not pin a CUDA device either.
+        self.allow_child_processes = allow_child_processes
         self.endpoints = endpoints
         self.control_plane = control_plane
         self.input_handler = input_handler or DirectInput()
         self.scheduler = scheduler
+        # Resolved once, so stages whose scheduler owns nothing route as before.
+        self.result_owner = (
+            scheduler if isinstance(scheduler, ResultOwningScheduler) else None
+        )
         self.project_payload = project_payload or {}
         self.stream_targets = stream_targets or []
         self.get_stream_done_targets = get_stream_done_targets
@@ -149,6 +161,9 @@ class Stage:
         self.tp_fanout = tp_fanout
         self.is_terminal = is_terminal
         self.owns_external_io = role in {"single", "leader"}
+        # Only the instance that owns external I/O serves the stage's routes.
+        self.http_socket_path = http_socket_path if self.owns_external_io else None
+        self.http_server: StageHttpServer | None = None
         self.replica_topology = ReplicaTopology.from_dict(replica_topology)
         self.replica_bindings: dict[str, dict[str, int]] = {}
 
@@ -181,13 +196,14 @@ class Stage:
         self.active_requests: set[str] = set()
         self.stream_queue: StreamQueue | None = None
         self.stream_chunk_counters: dict[tuple[str, str], int] = {}
-        self.inflight_work_pending: dict[str, int] = {}
         self.first_stream_chunk_seen: set[str] = set()
         self.local_stream_targets: dict[str, set[str]] = {}
         self.nonlocal_stream_targets: dict[str, set[str]] = {}
         self.receive_tasks: set[asyncio.Task[None]] = set()
         self.receive_lane_tails: dict[tuple[str, str], asyncio.Future[None]] = {}
         self.scheduler_thread: threading.Thread | None = None
+        self.outbox_waiter: ThreadPoolExecutor | None = None
+        self.outbox_task: asyncio.Task[None] | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.scheduler_crash_error: BaseException | None = None
         self.background_task_error: BaseException | None = None
@@ -253,7 +269,7 @@ class Stage:
                         # Active-stage binding so ``emit(stage=None)`` from
                         # scheduler-thread descendants resolves to this stage.
                         _set_active_stage(self.name)
-                        if self.gpu_id is not None:
+                        if self.gpu_id is not None and not self.allow_child_processes:
                             from sglang_omni.platforms import current_platform
 
                             current_platform.set_device(
@@ -292,8 +308,28 @@ class Stage:
             await asyncio.to_thread(serving_thread_ready.wait)
         else:
             pass
+        if self.http_socket_path is not None:
+            await self.start_http_routes(self.http_socket_path)
+        else:
+            pass
 
         logger.info("Stage %s started", self.name)
+
+    async def start_http_routes(self, socket_path: str) -> None:
+        """Serve the scheduler's HTTP app before the stage reports ready."""
+        app_factory = getattr(self.scheduler, "http_app", None)
+        if not callable(app_factory):
+            raise StageRoutesError(
+                f"Stage {self.name} declares http_routes, but its scheduler "
+                f"{type(self.scheduler).__name__} provides no http_app()"
+            )
+        else:
+            pass
+        app = await asyncio.to_thread(app_factory)
+        server = StageHttpServer(self.name, app, socket_path)
+        await asyncio.to_thread(server.start)
+        self.http_server = server
+        logger.info("Stage %s serves its HTTP routes", self.name)
 
     async def stop(self) -> None:
         self.running = False
@@ -313,6 +349,18 @@ class Stage:
             else:
                 pass
 
+        # The routes stop first, so no new request reaches a stopping scheduler.
+        http_server = self.http_server
+        self.http_server = None
+        if http_server is not None:
+            try:
+                await asyncio.to_thread(
+                    http_server.stop, _SCHEDULER_THREAD_JOIN_TIMEOUT_S
+                )
+            except Exception as exc:
+                _record_cleanup_error("HTTP routes", exc)
+        else:
+            pass
         receive_tasks = list(self.receive_tasks)
         for task in receive_tasks:
             task.cancel()
@@ -352,6 +400,7 @@ class Stage:
                 pass
         else:
             pass
+        await self.finish_outbox_drain()
         try:
             self.control_plane.close()
         except Exception as exc:
@@ -378,6 +427,7 @@ class Stage:
 
         abort_task = asyncio.create_task(self.abort_listener())
         outbox_task = asyncio.create_task(self.drain_outbox())
+        self.outbox_task = outbox_task
         abort_task.add_done_callback(
             lambda task: self.on_background_task_done(task, "abort listener")
         )
@@ -409,11 +459,6 @@ class Stage:
                 else:
                     pass
                 if isinstance(msg, TPWorkMessage):
-                    if msg.request_id in self.aborted:
-                        continue
-                    else:
-                        pass
-                    self.active_requests.add(msg.request_id)
                     await self.execute(msg.data)
                     continue
                 else:
@@ -611,6 +656,7 @@ class Stage:
             await self.send_data_ack(
                 msg, data_ref, success=False, error=error_text(exc)
             )
+            self.comm.cleanup(request_id)
             await self.wait_for_receive_predecessor(predecessor)
             await self.send_failure(request_id, f"relay read failed: {exc}")
             return
@@ -881,6 +927,8 @@ class Stage:
             return
         else:
             pass
+        with suppress(Exception):
+            self.scheduler.abort(request_id)
         await self.send_failure(
             request_id,
             (
@@ -907,6 +955,8 @@ class Stage:
             request_id,
             error,
         )
+        with suppress(Exception):
+            self.scheduler.abort(request_id)
         await self.send_failure(request_id, str(error))
 
     def data_ref_from_message(self, msg: DataReadyMessage) -> DataRef:
@@ -1057,6 +1107,8 @@ class Stage:
 
         if is_done:
             if not self.open_pre_payload_stream_if_allowed(request_id):
+                with suppress(Exception):
+                    self.scheduler.abort(request_id)
                 await self.send_failure(
                     request_id,
                     (
@@ -1102,25 +1154,10 @@ class Stage:
             IncomingMessage(request_id=request_id, type="stream_chunk", data=item)
         )
 
-    def tracks_multiple_inflight_work(self) -> bool:
-        return bool(
-            getattr(
-                self.scheduler,
-                "allow_multiple_inflight_per_request",
-                False,
-            )
-        )
-
     async def execute(self, payload: StagePayload) -> None:
         request_id = payload.request_id
         if request_id in self.aborted:
             return
-        else:
-            pass
-        if self.tracks_multiple_inflight_work():
-            self.inflight_work_pending[request_id] = (
-                self.inflight_work_pending.get(request_id, 0) + 1
-            )
         else:
             pass
         _emit_event(
@@ -1277,20 +1314,68 @@ class Stage:
     # ------------------------------------------------------------------
 
     async def drain_outbox(self) -> None:
-        if self.owns_external_io:
-            await self.drain_outbox_external()
+        # note (Richard Wang): the private waiter blocks until the scheduler emits
+        # or the stage stops, so an idle stage never wakes and the wait never
+        # holds a thread of the shared default executor.
+        waiter = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix=f"outbox-{self.name}"
+        )
+        self.outbox_waiter = waiter
+        try:
+            if self.owns_external_io:
+                await self.drain_outbox_external()
+            else:
+                await self.drain_outbox_follower()
+        finally:
+            self.outbox_waiter = None
+            waiter.shutdown(wait=False)
+
+    async def wait_outbox_message(self) -> OutgoingMessage:
+        outbox = self.scheduler.outbox
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(self.outbox_waiter, outbox.get)
+        except asyncio.CancelledError:
+            self.end_outbox_drain()
+            raise
+
+    def end_outbox_drain(self) -> None:
+        """Put the wakeup that ends both drains, releasing a blocked get.
+
+        The drains end only there, not when the stage stops running or the
+        outbox is momentarily empty, so they route everything the scheduler
+        published before it.
+        """
+        self.scheduler.outbox.put(OutgoingMessage(request_id="", type="wakeup"))
+
+    async def finish_outbox_drain(self) -> None:
+        """Route what the stopped scheduler published, then end the drain.
+
+        Stop calls this after the scheduler stopped and its thread ended, and
+        before the transports close. A result published later is dropped, as
+        its request ends with the stage.
+        """
+        task = self.outbox_task
+        if task is None or task.done() or self.outbox_waiter is None:
+            return
         else:
-            await self.drain_outbox_follower()
+            pass
+        self.end_outbox_drain()
+        done, _ = await asyncio.wait({task}, timeout=_SCHEDULER_THREAD_JOIN_TIMEOUT_S)
+        if not done:
+            logger.warning(
+                "Stage %s outbox drain did not finish within %gs",
+                self.name,
+                _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
+            )
+        else:
+            pass
 
     async def drain_outbox_external(self) -> None:
         """Drain scheduler outbox and route results downstream."""
-        loop = asyncio.get_running_loop()
         outbox = self.scheduler.outbox
-        while self.running or not outbox.empty():
-            try:
-                out = await loop.run_in_executor(None, lambda: outbox.get(timeout=0.1))
-            except _queue_mod.Empty:
-                continue
+        while True:
+            out = await self.wait_outbox_message()
 
             stream_run: list[OutgoingMessage] = []
             for batch_index in range(_OUTBOX_DRAIN_BATCH_SIZE):
@@ -1340,8 +1425,16 @@ class Stage:
                                 )
                         elif out.type == "error":
                             await self.send_failure(out.request_id, str(out.data))
+                        elif out.type == "wakeup":
+                            return
                         else:
                             pass
+                    elif out.type == "result" and self.result_owner is not None:
+                        self.result_owner.release_result(out.data, delivered=False)
+                    elif out.type == "wakeup":
+                        # Checked after the routed types, so routing pays
+                        # nothing, and after the stream run above was routed.
+                        return
                     else:
                         pass
 
@@ -1396,49 +1489,23 @@ class Stage:
                 )
         await self.send_local_stream_chunks(local_target, local_chunks)
 
-    def finish_inflight_work(
-        self, request_id: str, *, keep_replica_bindings: bool = False
-    ) -> None:
-        if request_id not in self.active_requests:
-            return
-        else:
-            pass
-        pending = self.inflight_work_pending.get(request_id, 0)
-        if pending > 1:
-            self.inflight_work_pending[request_id] = pending - 1
-        else:
-            self.clear_request_state(
-                request_id, keep_replica_bindings=keep_replica_bindings
-            )
-
     async def drain_outbox_follower(self) -> None:
         """Drain follower outbox without emitting external stage traffic."""
-        loop = asyncio.get_running_loop()
-        while self.running or not self.scheduler.outbox.empty():
-            try:
-                out = await loop.run_in_executor(
-                    None, lambda: self.scheduler.outbox.get(timeout=0.1)
-                )
-            except _queue_mod.Empty:
-                continue
+        while True:
+            out = await self.wait_outbox_message()
 
-            if out.type == "admitted":
-                if out.request_id not in self.aborted:
-                    self.active_requests.add(out.request_id)
+            if out.type == "wakeup":
+                return
+            elif out.type == "result":
+                if self.result_owner is not None:
+                    self.result_owner.release_result(out.data, delivered=False)
                 else:
                     pass
-                continue
-            else:
-                pass
-            if out.request_id not in self.active_requests:
-                continue
-            else:
-                pass
-
-            if out.type == "result":
-                self.finish_inflight_work(out.request_id)
+                self.clear_request_state(out.request_id)
             elif out.type == "stream":
                 continue
+            elif out.type == "admitted":
+                self.active_requests.add(out.request_id)
             elif out.type == "kv_transfer":
                 raise RuntimeError(
                     f"TP follower stage {self.name} cannot publish a KV transfer"
@@ -1535,14 +1602,49 @@ class Stage:
         else:
             pass
 
+    async def route_owned_result(self, request_id: str, result: object) -> None:
+        """Route a scheduler owned result and release it once routing settles.
+
+        The release runs after routing fails or is cancelled too, and tells the
+        scheduler whether a transport accepted the result.
+        """
+        owner = self.result_owner
+        delivered = False
+
+        def on_submitted() -> None:
+            nonlocal delivered
+            delivered = True
+
+        try:
+            await self.route_result(request_id, result, on_submitted)
+        except BaseException:
+            try:
+                owner.release_result(result, delivered=delivered)
+            except Exception:
+                logger.exception(
+                    "Stage %s failed to release result for %s", self.name, request_id
+                )
+            raise
+        owner.release_result(result, delivered=delivered)
+
     async def route_result(
         self,
         request_id: str,
         result: object,
+        on_submitted: Callable[[], None] | None = None,
     ) -> None:
-        """Route a completed result to next stage(s) or complete at coordinator."""
+        """Route a completed result to next stage(s) or complete at coordinator.
+
+        ``on_submitted`` reports transport acceptance to a result owning
+        scheduler, which route_owned_result supplies.
+        """
+        if on_submitted is None and self.result_owner is not None:
+            await self.route_owned_result(request_id, result)
+            return
+        else:
+            pass
         if not self.owns_external_io:
-            self.finish_inflight_work(request_id)
+            self.clear_request_state(request_id)
             return
         else:
             pass
@@ -1552,14 +1654,19 @@ class Stage:
             else None
         )
         if session_operation is not None and session_operation.operation != "append":
-            await self.control_plane.send_complete(
-                CompleteMessage(
-                    request_id=request_id,
-                    from_stage=self.name,
-                    success=True,
-                    result=result.data,
-                )
+            message = CompleteMessage(
+                request_id=request_id,
+                from_stage=self.name,
+                success=True,
+                result=result.data,
             )
+            if on_submitted is None:
+                await self.control_plane.send_complete(message)
+            else:
+                await self.control_plane.send_complete(
+                    message, on_submitted=on_submitted
+                )
+                on_submitted()
             self.clear_request_state(request_id)
             return
         else:
@@ -1592,16 +1699,17 @@ class Stage:
                 pass
         else:
             pass
-        next_stages = (
-            self.get_next(request_id, result) if session_operation is None else actual
-        )
-        if next_stages is None and self.tracks_multiple_inflight_work():
-            await self.send_failure(
-                request_id,
-                f"Stage {self.name}: a terminal stage cannot use multiple "
-                "in-flight work per request",
+        if on_submitted is not None:
+            # Claim before any stream completion, so a refused result sends none.
+            next_stages = (
+                self.get_next(request_id, result)
+                if session_operation is None
+                else actual
             )
-            return
+            if not self.result_owner.claim_result(result, terminal=next_stages is None):
+                return
+            else:
+                pass
         else:
             pass
         # Send stream done to the active stream targets for this request.
@@ -1626,6 +1734,14 @@ class Stage:
                 is_done=True,
             )
 
+        if on_submitted is None:
+            next_stages = (
+                self.get_next(request_id, result)
+                if session_operation is None
+                else actual
+            )
+        else:
+            pass
         routes_to_self = False
         if next_stages is None:
             # Terminal: notify coordinator
@@ -1635,14 +1751,19 @@ class Stage:
                 event_name="stage_complete",
                 metadata={"terminal": True},
             )
-            await self.control_plane.send_complete(
-                CompleteMessage(
-                    request_id=request_id,
-                    from_stage=self.name,
-                    success=True,
-                    result=result.data if isinstance(result, StagePayload) else result,
-                )
+            message = CompleteMessage(
+                request_id=request_id,
+                from_stage=self.name,
+                success=True,
+                result=result.data if isinstance(result, StagePayload) else result,
             )
+            if on_submitted is None:
+                await self.control_plane.send_complete(message)
+            else:
+                await self.control_plane.send_complete(
+                    message, on_submitted=on_submitted
+                )
+                on_submitted()
         else:
             if isinstance(next_stages, str):
                 next_stages = [next_stages]
@@ -1653,9 +1774,9 @@ class Stage:
                 for target in next_stages
             )
             if routes_to_self:
-                # Local self-dispatch readmits this request synchronously, so
-                # retire the completed pass before the new pass is registered.
-                self.finish_inflight_work(request_id, keep_replica_bindings=True)
+                # A local dispatch can register the next pass synchronously.
+                # Keep its replica assignment but retire the completed pass first.
+                self.clear_request_state(request_id, keep_replica_bindings=True)
             else:
                 pass
             is_single_target = len(next_stages) == 1
@@ -1674,9 +1795,13 @@ class Stage:
                     allow_projected_local_object=not is_single_target,
                     stream_targets_for_request=stream_targets_for_request,
                 )
+                if on_submitted is not None:
+                    on_submitted()
+                else:
+                    pass
 
         if not routes_to_self:
-            self.finish_inflight_work(request_id)
+            self.clear_request_state(request_id)
         else:
             pass
 
@@ -2266,27 +2391,13 @@ class Stage:
         await self.control_plane.send_stream(msg)
 
     async def send_failure(self, request_id: str, error: str) -> None:
-        if not self.record_aborted_request_id(request_id):
-            return
+        self.record_aborted_request_id(request_id)
+        if not self.owns_external_io:
+            self.clear_request_state(request_id)
+            raise RuntimeError(f"Follower stage {self.name} failed: {error}")
         else:
             pass
         try:
-            self.scheduler.abort(request_id)
-        except Exception:
-            logger.exception(
-                f"Stage {self.name} failed to abort scheduler request {request_id}"
-            )
-        try:
-            self.comm.cleanup(request_id)
-        except Exception:
-            logger.exception(
-                f"Stage {self.name} failed to clean communication state for request {request_id}"
-            )
-        try:
-            if not self.owns_external_io:
-                raise RuntimeError(f"Follower stage {self.name} failed: {error}")
-            else:
-                pass
             await self.control_plane.send_complete(
                 CompleteMessage(
                     request_id=request_id,
@@ -2302,7 +2413,6 @@ class Stage:
         self, request_id: str, *, keep_replica_bindings: bool = False
     ) -> None:
         self.active_requests.discard(request_id)
-        self.inflight_work_pending.pop(request_id, None)
         self.input_handler.cancel(request_id)
         if self.stream_queue is not None:
             self.stream_queue.close(request_id)
@@ -2337,7 +2447,11 @@ class Stage:
             if request_id not in self.aborted
         ]
         for request_id in active_request_ids:
+            with suppress(Exception):
+                self.scheduler.abort(request_id)
             await self.send_failure(request_id, error)
+            with suppress(Exception):
+                self.comm.cleanup(request_id)
         self.control_plane.close()
 
     async def abort_listener(self) -> None:
@@ -2357,13 +2471,8 @@ class Stage:
             else:
                 pass
 
-    def record_aborted_request_id(self, request_id: str) -> bool:
-        if request_id in self.aborted:
-            return False
-        else:
-            pass
+    def record_aborted_request_id(self, request_id: str) -> None:
         self.record_bounded_request_id(self.aborted, request_id)
-        return True
 
     @staticmethod
     def record_bounded_request_id(ids: set[str], request_id: str) -> None:
@@ -2377,10 +2486,7 @@ class Stage:
             pass
 
     def on_abort(self, request_id: str) -> None:
-        if not self.record_aborted_request_id(request_id):
-            return
-        else:
-            pass
+        self.record_aborted_request_id(request_id)
         self.comm.cleanup(request_id)
         self.clear_request_state(request_id)
         self.scheduler.abort(request_id)

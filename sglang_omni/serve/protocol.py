@@ -18,7 +18,6 @@ from pydantic import (
 )
 
 from sglang_omni.client.types import UsageInfo
-from sglang_omni.proto.segments import InterleavedGenerationParams, UMMSegment
 
 
 class UsageResponse(BaseModel):
@@ -54,7 +53,7 @@ class ImageGenerationParams(BaseModel):
     Text-to-image defaults to 1024x1024; edits follow the input image grid.
     """
 
-    model_config = ConfigDict(allow_inf_nan=False)
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
 
     mode: Literal["normal", "thinking"] = "normal"
     decode_mode: Literal["normal", "decoder-turbo"] = "normal"
@@ -67,6 +66,17 @@ class ImageGenerationParams(BaseModel):
     image_h: int | None = Field(default=None, ge=32, multiple_of=32)
     image_w: int | None = Field(default=None, ge=32, multiple_of=32)
     dllm_steps: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_decoder_steps(self) -> ImageGenerationParams:
+        if self.decode_mode == "normal" and self.decoder_steps == 1:
+            raise ValueError(
+                "normal decoding requires decoder_steps >= 2; use decoder-turbo "
+                "for a one-step request"
+            )
+        else:
+            pass
+        return self
 
 
 class ChatCompletionRequest(BaseModel):
@@ -92,7 +102,7 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
 
     # Multi-modal output control
-    modalities: list[str] | None = None  # e.g. ["text", "audio"] or ["image"]
+    modalities: list[str] | None = None  # e.g. ["text", "audio"]
 
     # Audio output configuration
     audio: dict[str, object] | None = None  # {"voice": "...", "format": "wav"}
@@ -104,28 +114,6 @@ class ChatCompletionRequest(BaseModel):
     # Image input (sglang-omni extension)
     # Can be a list of image file paths (local paths or URLs)
     images: list[str] | None = None
-
-    # Image generation config (sglang-omni extension)
-    image_generation: ImageGenerationParams | InterleavedGenerationParams | None = None
-
-    @field_validator("image_generation", mode="before")
-    @classmethod
-    def parse_image_generation(
-        cls, value: object
-    ) -> ImageGenerationParams | InterleavedGenerationParams | None:
-        if value is None:
-            return None
-        else:
-            pass
-        if isinstance(value, dict) and value.get("mode") == "interleaved":
-            return InterleavedGenerationParams.model_validate(value)
-        else:
-            pass
-        if isinstance(value, InterleavedGenerationParams):
-            return value
-        else:
-            pass
-        return ImageGenerationParams.model_validate(value)
 
     # Video input (sglang-omni extension)
     # Can be a list of video file paths (local paths or URLs)
@@ -372,7 +360,6 @@ class GenerateResponse(BaseModel):
     """Response body for ``POST /generate``."""
 
     text: str = ""
-    segments: list[UMMSegment] | None = None
     audio: GenerateAudio | None = None
     meta_info: GenerateMetaInfo
 

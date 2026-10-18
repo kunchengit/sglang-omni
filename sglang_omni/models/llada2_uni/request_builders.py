@@ -32,10 +32,7 @@ from sglang_omni.models.llada2_uni.config import (
     IMAGE_STAGE,
     THINKER_STAGE,
 )
-from sglang_omni.models.llada2_uni.interleaved import (
-    advance_interleaved_state,
-    interleaved_next,
-)
+from sglang_omni.models.llada2_uni.interleaved import advance_interleaved_state
 from sglang_omni.models.llada2_uni.payload_types import (
     LLaDA2UniPipelineState,
     ThinkerOutput,
@@ -441,10 +438,6 @@ def thinking_phase1_to_phase2(
 def thinker_next(request_id: str, output: StagePayload) -> str | list[str]:
     """Re-enter the thinker once before delivering the text and image results."""
     state = LLaDA2UniPipelineState.from_dict(output.data)
-    if state.task_kind == "interleaved":
-        return interleaved_next(request_id, output)
-    else:
-        pass
     if state.thinking_phase == "image" and state.thinker_out is None:
         return THINKER_STAGE
     else:

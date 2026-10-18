@@ -23,7 +23,11 @@ from sglang_omni.models.llada2_uni.config import (
     DEFAULT_THINKER_MAX_NEW_TOKENS,
     IMAGE_STAGE,
 )
-from sglang_omni.models.llada2_uni.interleaved import SYSTEM_PROMPT_INTERLEAVED
+from sglang_omni.models.llada2_uni.interleaved import (
+    SYSTEM_PROMPT_INTERLEAVED,
+    InterleavedGenerationParams,
+    validate_interleaved_inputs,
+)
 from sglang_omni.models.llada2_uni.payload_types import (
     ImageEncoderInputs,
     LLaDA2UniPipelineState,
@@ -36,10 +40,6 @@ from sglang_omni.preprocessing.image import (
     ensure_image_list_async,
 )
 from sglang_omni.proto import StagePayload
-from sglang_omni.proto.segments import (
-    InterleavedGenerationParams,
-    validate_interleaved_inputs,
-)
 
 # LLaDA2-Uni chat template tokens
 ROLE_HUMAN = "<role>HUMAN</role>"

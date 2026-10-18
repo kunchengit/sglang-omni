@@ -2,7 +2,7 @@
 """OpenAI-compatible API server for sglang-omni.
 
 Provides the following endpoints:
-- POST /v1/chat/completions  — Text, audio, and image chat completions
+- POST /v1/chat/completions  — Text (+ audio) chat completions
 - POST /v1/audio/speech      — Text-to-speech synthesis
 - POST /v1/audio/translations — Translate audio speech to English
 - POST /v1/audio/speech/batch — Batch text-to-speech synthesis
@@ -27,7 +27,7 @@ import logging
 import time
 import uuid
 from contextlib import aclosing, suppress
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from enum import Enum
 from typing import AsyncGenerator, AsyncIterator, Literal
 
@@ -66,7 +66,13 @@ from sglang_omni.client.audio import (
     encode_pcm,
     select_audio_delta,
 )
-from sglang_omni.client.types import UNKNOWN_FINISH_REASON, UsageInfo
+from sglang_omni.client.types import (
+    UNKNOWN_FINISH_REASON,
+    UMMCompletionResult,
+    UMMCompletionStreamChunk,
+    UMMGenerateChunk,
+    UsageInfo,
+)
 from sglang_omni.config import (
     CustomVoiceConfig,
     RealtimeTranscriptionConfig,
@@ -79,10 +85,6 @@ from sglang_omni.http.admin_auth import (
 )
 from sglang_omni.http.favicon import register_favicon
 from sglang_omni.proto.admin import AdminResponse
-from sglang_omni.proto.segments import (
-    InterleavedGenerationParams,
-    validate_interleaved_inputs,
-)
 from sglang_omni.serve.diarizations import register_diarizations
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
@@ -216,6 +218,8 @@ def create_app(
     *,
     model_name: str | None = None,
     supports_image_api: bool = False,
+    image_decode_mode: Literal["normal", "decoder-turbo"] = "normal",
+    image_decode_steps: int = 50,
     requires_uploaded_voice_for_named_voice: bool = False,
     supports_uploaded_voice_references: bool = True,
     custom_voice_config: CustomVoiceConfig | None = None,
@@ -236,6 +240,7 @@ def create_app(
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
     architectures: list[str] | None = None,
     audio_chunking: ResolvedAudioChunking | None = None,
+    interleaved_output: bool = False,
 ) -> FastAPI:
     """Create a FastAPI application with OpenAI-compatible endpoints.
 
@@ -243,6 +248,8 @@ def create_app(
         client: Client instance connected to the pipeline coordinator.
         model_name: Default model name to report in responses and /v1/models.
         supports_image_api: Mount image generation and editing routes for this pipeline.
+        image_decode_mode: Decoder factory mode used to validate omitted request modes.
+        image_decode_steps: Decoder factory step count used for omitted request steps.
         requires_uploaded_voice_for_named_voice: Whether non-default TTS voice
             names must resolve to uploaded voices before reaching the model.
         supports_uploaded_voice_references: Whether uploaded voice names can be
@@ -278,6 +285,9 @@ def create_app(
             ``/v1/audio/speech/batch``.
         audio_chunking: Long-audio chunking policy for ``/v1/audio/transcriptions``,
             declared by the pipeline config. None keeps chunking off.
+        interleaved_output: Whether results are ordered interleaved (UMM)
+            segments, which ``/generate`` streams. Other pipelines refuse
+            ``stream=true`` on ``/generate``.
 
     Returns:
         Configured FastAPI application.
@@ -303,6 +313,7 @@ def create_app(
     app.state.architectures = [a for a in (architectures or []) if a]
     app.state.supports_audio_translation = supports_audio_translation
     app.state.audio_chunking = audio_chunking or ResolvedAudioChunking.disabled()
+    app.state.interleaved_output = interleaved_output
     app.state.long_audio_admission = LongAudioAdmission(
         app.state.audio_chunking.max_concurrent_long_audio_requests
     )
@@ -344,7 +355,7 @@ def create_app(
     register_admin(app, resolved_key)
     register_chat_completions(app)
     if supports_image_api:
-        register_images(app)
+        register_images(app, image_decode_mode, image_decode_steps)
     else:
         pass
     register_voices(app)
@@ -363,104 +374,144 @@ def create_app(
     return app
 
 
-def build_image_request(
-    request: "ImageGenerationsRequest", source: str | None = None
-) -> GenerateRequest:
-    """Translate diffusion sampling names without changing the model's defaults."""
-    supplied = request.model_dump(exclude_unset=True, exclude_none=True)
-    controls = ImageGenerationParams.model_fields.keys() - {"image_h", "image_w"}
-    common_fields = {
-        "prompt",
-        "model",
-        "n",
-        "response_format",
-        "output_format",
-        "size",
-        "width",
-        "height",
-        "num_inference_steps",
-        "guidance_scale",
-        "seed",
-        "user",
-    }
-    unsupported = supplied.keys() - common_fields - controls
-    if unsupported:
-        raise ValueError(
-            f"Unsupported image parameters: {', '.join(sorted(unsupported))}"
-        )
-    if request.n != 1:
-        raise ValueError("This image pipeline supports n=1")
-    if request.response_format not in (None, "url", "b64_json"):
-        raise ValueError("response_format must be url or b64_json")
-    if request.output_format not in (None, "png"):
-        raise ValueError("This image pipeline supports PNG output")
-    if isinstance(request.seed, list):
-        raise ValueError("This image pipeline requires a single integer seed")
-
-    options = {key: value for key, value in supplied.items() if key in controls}
-    for native, target in (
-        ("num_inference_steps", "decoder_steps"),
-        ("guidance_scale", "cfg_scale"),
-    ):
-        if native in supplied:
-            if target in options and options[target] != supplied[native]:
-                raise ValueError(f"{native} and {target} disagree")
-            options[target] = supplied[native]
-
-    dimensions = {"size", "width", "height"} & supplied.keys()
-    if source is not None:
-        if not request.prompt.strip():
-            raise ValueError("Image editing requires a non-empty instruction")
-        if dimensions:
-            raise ValueError(
-                "Edit output follows the source grid; omit size, width and height"
-            )
-        if options.get("mode") == "thinking":
-            raise ValueError("Thinking mode does not support editing")
-    else:
-        if (request.width is None) != (request.height is None):
-            raise ValueError("width and height must be provided together")
-        size = supplied.get("size")
-        if size is not None:
-            width, height = (int(value) for value in size.split("x"))
-            if request.width is not None and (width, height) != (
-                request.width,
-                request.height,
-            ):
-                raise ValueError("size and width/height disagree")
-        else:
-            width = request.width if request.width is not None else 1024
-            height = request.height if request.height is not None else 1024
-        options.update(image_w=width, image_h=height)
-
-    params = ImageGenerationParams.model_validate(options)
-    return GenerateRequest(
-        model=request.model,
-        messages=[Message(role="user", content=request.prompt)],
-        output_modalities=["image"],
-        stream=False,
-        sampling=SamplingParams(seed=request.seed),
-        metadata={
-            "image_generation": params.model_dump(
-                exclude_unset=True, exclude_none=True
-            ),
-            **({"images": [source]} if source is not None else {}),
-        },
-    )
-
-
-def register_images(app: FastAPI) -> None:
+def register_images(
+    app: FastAPI,
+    decode_mode: Literal["normal", "decoder-turbo"],
+    decoder_steps: int,
+) -> None:
     """Register native image-generation and single-image-edit routes."""
-    global ImageGenerationsRequest, ImageResponse, ImageResponseData
-
     from sglang.multimodal_gen.runtime.entrypoints.openai.protocol import (
         ImageGenerationsRequest,
         ImageResponse,
         ImageResponseData,
     )
 
-    async def generate(
+    def build_image_request(
         request: ImageGenerationsRequest, source: str | None = None
+    ) -> GenerateRequest:
+        """Translate diffusion sampling names without changing model defaults."""
+        supplied = request.model_dump(exclude_unset=True, exclude_none=True)
+        controls = ImageGenerationParams.model_fields.keys() - {
+            "image_h",
+            "image_w",
+        }
+        common_fields = {
+            "prompt",
+            "model",
+            "n",
+            "response_format",
+            "output_format",
+            "size",
+            "width",
+            "height",
+            "num_inference_steps",
+            "guidance_scale",
+            "seed",
+            "user",
+        }
+        unsupported = supplied.keys() - common_fields - controls
+        if unsupported:
+            raise ValueError(
+                f"Unsupported image parameters: {', '.join(sorted(unsupported))}"
+            )
+        else:
+            pass
+        if request.n != 1:
+            raise ValueError("This image pipeline supports n=1")
+        else:
+            pass
+        if request.response_format not in (None, "url", "b64_json"):
+            raise ValueError("response_format must be url or b64_json")
+        else:
+            pass
+        if request.output_format not in (None, "png"):
+            raise ValueError("This image pipeline supports PNG output")
+        else:
+            pass
+        if isinstance(request.seed, list):
+            raise ValueError("This image pipeline requires a single integer seed")
+        else:
+            pass
+
+        options = {key: value for key, value in supplied.items() if key in controls}
+        for native, target in (
+            ("num_inference_steps", "decoder_steps"),
+            ("guidance_scale", "cfg_scale"),
+        ):
+            if native in supplied:
+                if target in options and options[target] != supplied[native]:
+                    raise ValueError(f"{native} and {target} disagree")
+                else:
+                    pass
+                options[target] = supplied[native]
+            else:
+                pass
+
+        dimensions = {"size", "width", "height"} & supplied.keys()
+        if source is not None:
+            if not request.prompt.strip():
+                raise ValueError("Image editing requires a non-empty instruction")
+            else:
+                pass
+            if dimensions:
+                raise ValueError(
+                    "Edit output follows the source grid; omit size, width and height"
+                )
+            else:
+                pass
+        else:
+            if (request.width is None) != (request.height is None):
+                raise ValueError("width and height must be provided together")
+            else:
+                pass
+            size = supplied.get("size")
+            if size is not None:
+                width, height = (int(value) for value in size.split("x"))
+                if request.width is not None and (width, height) != (
+                    request.width,
+                    request.height,
+                ):
+                    raise ValueError("size and width/height disagree")
+                else:
+                    pass
+            else:
+                width = request.width if request.width is not None else 1024
+                height = request.height if request.height is not None else 1024
+            options.update(image_w=width, image_h=height)
+
+        params = ImageGenerationParams.model_validate(
+            {
+                "decode_mode": decode_mode,
+                "decoder_steps": (
+                    8
+                    if options.get("decode_mode") == "decoder-turbo"
+                    else decoder_steps
+                ),
+                **options,
+            }
+        )
+        if source is not None and params.mode == "thinking":
+            raise ValueError("Thinking mode only supports text-to-image generation")
+        else:
+            pass
+        return GenerateRequest(
+            model=request.model,
+            messages=[Message(role="user", content=request.prompt)],
+            output_modalities=["image"],
+            stream=False,
+            sampling=SamplingParams(seed=request.seed),
+            metadata={
+                "image_generation": params.model_dump(
+                    include=set(options), exclude_none=True
+                ),
+                **({"images": [source]} if source is not None else {}),
+            },
+        )
+
+    async def generate(
+        request: ImageGenerationsRequest,
+        http_request: Request,
+        source: str | None = None,
     ) -> ImageResponse:
         try:
             generation = build_image_request(request, source)
@@ -468,25 +519,39 @@ def register_images(app: FastAPI) -> None:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         request_id = str(uuid.uuid4())
         try:
-            result = await app.state.client.completion(
-                generation, request_id=request_id
+            result = await complete_unless_disconnected(
+                http_request,
+                app.state.client,
+                app.state.client.completion(generation, request_id=request_id),
+                request_id=request_id,
             )
         except Exception as exc:
             status_code = generation_error_status_code(exc)
             if status_code == 500:
                 logger.exception(f"Error generating image for request {request_id}")
+            else:
+                pass
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
         if result.image is None:
             raise HTTPException(status_code=500, detail="Pipeline returned no image")
+        else:
+            pass
         if request.response_format == "b64_json":
             image = ImageResponseData(b64_json=result.image)
         else:
             image = ImageResponseData(url=f"data:image/png;base64,{result.image}")
         return ImageResponse(id=request_id, data=[image])
 
-    @app.post("/v1/images/generations", response_model=ImageResponse)
-    async def generations(request: ImageGenerationsRequest) -> ImageResponse:
-        return await generate(request)
+    async def generations(
+        request: ImageGenerationsRequest, http_request: Request
+    ) -> ImageResponse:
+        return await generate(request, http_request)
+
+    # The diffusion protocol is an optional dependency imported in this
+    # function. Resolve the local model type before FastAPI builds the route;
+    # postponed annotations cannot resolve function-local names themselves.
+    generations.__annotations__["request"] = ImageGenerationsRequest
+    app.post("/v1/images/generations", response_model=ImageResponse)(generations)
 
     edit_schema = ImageGenerationsRequest.model_json_schema()
     edit_schema["properties"].update(
@@ -507,8 +572,8 @@ def register_images(app: FastAPI) -> None:
             }
         },
     )
-    async def edits(request: Request) -> ImageResponse:
-        async with request.form() as form:
+    async def edits(http_request: Request) -> ImageResponse:
+        async with http_request.form() as form:
             sources = [
                 value
                 for key, value in form.multi_items()
@@ -518,6 +583,8 @@ def register_images(app: FastAPI) -> None:
                 raise HTTPException(
                     status_code=400, detail="Edit requires exactly one source image"
                 )
+            else:
+                pass
             fields = {
                 key: value
                 for key, value in form.items()
@@ -531,7 +598,9 @@ def register_images(app: FastAPI) -> None:
             if isinstance(source, StarletteUploadFile):
                 encoded = base64.b64encode(await source.read()).decode("ascii")
                 source = f"data:{source.content_type or 'image/png'};base64,{encoded}"
-        return await generate(params, source)
+            else:
+                pass
+        return await generate(params, http_request, source)
 
 
 def register_voices(app: FastAPI) -> None:
@@ -565,10 +634,14 @@ def register_voices(app: FastAPI) -> None:
     ) -> JSONResponse:
         voice_store: SpeakerSampleStore = app.state.speaker_sample_store
         try:
-            response = voice_store.upload(
+            audio_bytes = await read_voice_upload(audio_sample)
+            # note (Richard Wang): decoding and saving run off the event loop,
+            # so one upload never stalls the server's other routes.
+            response = await asyncio.to_thread(
+                voice_store.upload,
                 name=name,
                 consent=consent,
-                audio_bytes=await read_voice_upload(audio_sample),
+                audio_bytes=audio_bytes,
                 filename=audio_sample.filename,
                 content_type=audio_sample.content_type,
                 ref_text=ref_text,
@@ -928,78 +1001,6 @@ def common_model_info_value(
     return None
 
 
-def validate_image_generation_request(req: ChatCompletionRequest) -> None:
-    """Reject unsupported image requests before dispatch or SSE headers."""
-    if req.stream and (
-        req.image_generation is not None or "image" in (req.modalities or [])
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Image generation does not support streaming; set stream=false",
-        )
-    else:
-        pass
-    if req.image_generation is None:
-        return
-    else:
-        pass
-    if isinstance(req.image_generation, InterleavedGenerationParams):
-        try:
-            validate_interleaved_inputs(
-                [message.model_dump() for message in req.messages],
-                req.modalities,
-                has_media=bool(req.images or req.audios or req.videos),
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return
-    else:
-        pass
-
-    has_image = bool(req.images)
-    instruction = ""
-    for message in req.messages:
-        content = message.content
-        text_parts: list[str] = []
-        if isinstance(content, str):
-            text_parts.append(content)
-        elif isinstance(content, list):
-            for item in content:
-                if isinstance(item, str):
-                    text_parts.append(item)
-                elif isinstance(item, dict):
-                    kind = item.get("type", "text")
-                    if kind == "text" and isinstance(item.get("text"), str):
-                        text_parts.append(item["text"])
-                    elif kind == "image_url":
-                        url = item.get("image_url")
-                        if isinstance(url, dict):
-                            url = url.get("url")
-                        else:
-                            pass
-                        has_image = has_image or bool(url)
-                    elif kind == "image":
-                        has_image = has_image or bool(item.get("image"))
-                    else:
-                        pass
-                else:
-                    pass
-        else:
-            pass
-        if message.role == "user":
-            instruction = "".join(text_parts)
-        else:
-            pass
-
-    if has_image and not instruction.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Image editing requires a non-empty instruction",
-        )
-    else:
-        pass
-
-
 def register_chat_completions(app: FastAPI) -> None:
     @app.post("/v1/chat/completions")
     async def chat_completions(
@@ -1007,8 +1008,6 @@ def register_chat_completions(app: FastAPI) -> None:
     ) -> Response:
         client: Client = app.state.client
         default_model: str = app.state.model_name
-
-        validate_image_generation_request(req)
 
         request_id = req.request_id or str(uuid.uuid4())
         response_id = f"chatcmpl-{request_id}"
@@ -1085,19 +1084,13 @@ async def chat_non_stream(
             status_code=generation_error_status_code(exc), detail=str(exc)
         ) from exc
 
-    requested_modalities = req.modalities if req.modalities is not None else ["text"]
+    requested_modalities = req.modalities or ["text"]
 
     # Build message content
     message: dict[str, str | dict[str, str | None]] = {"role": "assistant"}
 
     if "text" in requested_modalities and result.text:
         message["content"] = result.text
-    else:
-        pass
-
-    if isinstance(req.image_generation, InterleavedGenerationParams):
-        message["content"] = result.text
-        message["segments"] = result.segments
     else:
         pass
 
@@ -1110,12 +1103,12 @@ async def chat_non_stream(
     else:
         pass
 
-    if "image" in requested_modalities and result.image is not None:
-        message["image"] = {"data": result.image, "format": "png"}
+    if isinstance(result, UMMCompletionResult):
+        message["segments"] = [segment.to_dict() for segment in result.segments]
     else:
         pass
 
-    if not {"content", "audio", "image"}.intersection(message):
+    if "content" not in message and "audio" not in message:
         message["content"] = result.text
     else:
         pass
@@ -1249,7 +1242,10 @@ async def chat_stream_events(
                 pass
 
             delta = ChatCompletionStreamDelta()
-            emit = False
+            segment = (
+                chunk.segment if isinstance(chunk, UMMCompletionStreamChunk) else None
+            )
+            emit = segment is not None
 
             # Send role on first chunk
             if not role_sent:
@@ -1305,6 +1301,10 @@ async def chat_stream_events(
             data = stream_resp.model_dump(exclude_none=True)
             for choice in data.get("choices", []):
                 choice.setdefault("finish_reason", None)
+            if segment is not None:
+                data["choices"][0]["delta"]["segment"] = segment.to_dict()
+            else:
+                pass
             yield f"data: {json.dumps(data)}\n\n"
 
     # Finish chunk: empty delta + finish_reason.
@@ -1356,11 +1356,7 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     messages = [Message(role=m.role, content=m.content) for m in req.messages]
 
     # Determine output modalities
-    output_modalities = req.modalities if req.modalities is not None else ["text"]
-    if isinstance(req.image_generation, InterleavedGenerationParams):
-        output_modalities = ["text", "image"]
-    else:
-        pass
+    output_modalities = req.modalities or ["text"]  # e.g. ["text", "audio"]
 
     # Build per-stage sampling overrides
     stage_sampling: dict[str, SamplingParams] | None = None
@@ -1432,14 +1428,6 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
         metadata["use_audio_in_video"] = req.use_audio_in_video
     else:
         pass
-    if req.image_generation is not None:
-        # Omitted CFG values must remain omitted: edit and T2I defaults differ.
-        metadata["image_generation"] = req.image_generation.model_dump(
-            exclude_none=True,
-            exclude_unset=True,
-        )
-    else:
-        pass
 
     extra_params: dict[str, int | float] = {}
     for field_name, value in (
@@ -1468,7 +1456,17 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     )
 
 
+ROLLOUT_ARTIFACT_FIELDS = (
+    "return_logprob",
+    "return_omni_rollout",
+    "return_routed_experts",
+    "return_indexer_topk",
+)
+
+
 def register_generate(app: FastAPI) -> None:
+    interleaved = app.state.interleaved_output
+
     @app.post("/generate")
     async def generate(req: RolloutGenerateRequest) -> Response:
         client: Client = app.state.client
@@ -1483,7 +1481,25 @@ def register_generate(app: FastAPI) -> None:
             )
         else:
             pass
-        if req.stream:
+        if interleaved:
+            # Interleaved results carry no rollout artifacts, so the default
+            # return_logprob=true is dropped and an explicit request refused.
+            requested = [
+                name
+                for name in ROLLOUT_ARTIFACT_FIELDS
+                if name in req.model_fields_set and getattr(req, name)
+            ]
+            if requested:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Interleaved /generate returns no logprobs or rollout "
+                        f"artifacts. Leave {', '.join(requested)} unset or false"
+                    ),
+                )
+            else:
+                req = req.model_copy(update={"return_logprob": False})
+        elif req.stream:
             raise HTTPException(
                 status_code=400,
                 detail="stream=true is not supported by /generate yet",
@@ -1496,6 +1512,13 @@ def register_generate(app: FastAPI) -> None:
 
         try:
             gen_req = build_rollout_generate_request(req)
+            if req.stream:
+                return _ClosableStreamingResponse(
+                    generate_stream(client, gen_req, request_id),
+                    media_type="text/event-stream",
+                )
+            else:
+                pass
             result = await client.completion(
                 gen_req,
                 request_id=request_id,
@@ -1513,8 +1536,63 @@ def register_generate(app: FastAPI) -> None:
                 status_code=generation_error_status_code(exc), detail=str(exc)
             ) from exc
 
-        response = build_generate_response(req, result, audio_format)
-        return JSONResponse(content=response.model_dump())
+        content = build_generate_response(req, result, audio_format).model_dump()
+        if isinstance(result, UMMCompletionResult):
+            content["segments"] = [segment.to_dict() for segment in result.segments]
+        else:
+            pass
+        return JSONResponse(content=content)
+
+
+async def generate_stream(
+    client: Client, request: GenerateRequest, request_id: str
+) -> AsyncIterator[str]:
+    """Stream an interleaved request as SSE.
+
+    Each accepted segment is one segment event with its data. The complete
+    event lists every segment by reference and carries the finish reason.
+    """
+    stream = client.generate(request, request_id=request_id)
+    try:
+        async with aclosing(stream):
+            async for chunk in stream:
+                if not isinstance(chunk, UMMGenerateChunk):
+                    raise TypeError("Streaming /generate serves interleaved results")
+                elif chunk.segment is not None:
+                    event, data = "segment", chunk.segment.to_dict()
+                elif chunk.finish_reason is not None:
+                    # Segment events already carried each segment's data.
+                    refs = [
+                        replace(segment, data=None) for segment in chunk.segments or []
+                    ]
+                    event = "complete"
+                    data = {
+                        "finish_reason": chunk.finish_reason,
+                        "segments": [segment.to_dict() for segment in refs],
+                    }
+                else:
+                    continue
+                yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
+    except Exception as exc:
+        status = generation_error_status_code(exc)
+        # As in chat_stream, a traceback only for unexpected errors.
+        if status == 500:
+            logger.exception(f"Generate stream failed for request {request_id}")
+        else:
+            logger.warning(
+                f"Generate stream for request {request_id} failed with "
+                f"status {status}. {exc}"
+            )
+        data = {
+            "error": {
+                "message": str(exc),
+                "type": "invalid_request_error" if status < 500 else "server_error",
+                "code": status,
+            }
+        }
+        yield f"event: error\ndata: {json.dumps(data)}\n\n"
+        return
+    yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
 
 def rollout_sampling_to_client(params: RolloutSamplingParams) -> SamplingParams:
@@ -1666,9 +1744,7 @@ def build_generate_response(
         ),
         omni_rollout=result.omni_rollout if req.return_omni_rollout else None,
     )
-    return GenerateResponse(
-        text=result.text, audio=audio, segments=result.segments, meta_info=meta_info
-    )
+    return GenerateResponse(text=result.text, audio=audio, meta_info=meta_info)
 
 
 def realtime_unavailable_response(message: str) -> JSONResponse:

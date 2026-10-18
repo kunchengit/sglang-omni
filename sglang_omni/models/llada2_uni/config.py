@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Literal
+from typing import ClassVar, Literal
 
 from pydantic import Field
 
@@ -22,7 +22,6 @@ IMAGE_STAGE = "image_encoder"
 THINKER_STAGE = "thinker"
 DECODE_STAGE = "decode"
 IMAGE_DECODE_STAGE = "image_decode"
-INTERLEAVED_COLLECT_STAGE = "interleaved_collect"
 
 DEFAULT_THINKER_MAX_NEW_TOKENS = 2048
 
@@ -88,6 +87,16 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
 
     supports_image_api: ClassVar[bool] = True
 
+    def image_decode_mode(self) -> Literal["normal", "decoder-turbo"]:
+        stage = self.stage_named(IMAGE_DECODE_STAGE)
+        assert isinstance(stage, LLaDA2ImageDecoderStageConfig)
+        return stage.factory.decode_mode
+
+    def image_decode_steps(self) -> int:
+        stage = self.stage_named(IMAGE_DECODE_STAGE)
+        assert isinstance(stage, LLaDA2ImageDecoderStageConfig)
+        return stage.factory.num_steps
+
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         **LLaDA2UniPipelineConfig.stage_config_types,
         IMAGE_DECODE_STAGE: LLaDA2ImageDecoderStageConfig,
@@ -137,75 +146,9 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
     ]
 
 
-class LLaDA2UniInterleavedPipelineConfig(LLaDA2UniPipelineConfig):
-    """Text-only interleaved generation with asynchronous frame decoding."""
-
-    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        **LLaDA2UniPipelineConfig.stage_config_types,
-        IMAGE_DECODE_STAGE: LLaDA2ImageDecoderStageConfig,
-    }
-
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, object]:
-        kwargs = super().stage_factory_kwargs(stage_name)
-        if stage_name == IMAGE_DECODE_STAGE:
-            kwargs["interleaved_nonterminal"] = True
-        else:
-            pass
-        return kwargs
-
-    stages: list[StageConfig] = [
-        StageConfig(
-            name=PREPROCESSING_STAGE,
-            process="pipeline",
-            factory_path=f"{_PKG}.stages.create_preprocessing_executor",
-            factory=FactoryArgs(max_seq_len=8192),
-            next=THINKER_STAGE,
-        ),
-        EngineStageConfig(
-            name=THINKER_STAGE,
-            process="pipeline",
-            factory_path=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
-            factory=FactoryArgs(max_seq_len=8192, dllm_algorithm="LowConfidenceCFG"),
-            engine=EngineArgs(
-                mem_fraction_static=0.75,
-                max_running_requests=3,
-                cuda_graph_bs=[1, 2, 3, 4],
-            ),
-            gpu=0,
-            gpu_memory_fraction=0.75,
-            next=[THINKER_STAGE, IMAGE_DECODE_STAGE, INTERLEAVED_COLLECT_STAGE],
-            route_fn=f"{_PKG}.request_builders.thinker_next",
-            project_payload={
-                stage: f"{_PKG}.interleaved.project_interleaved_payload"
-                for stage in (
-                    THINKER_STAGE,
-                    IMAGE_DECODE_STAGE,
-                    INTERLEAVED_COLLECT_STAGE,
-                )
-            },
-        ),
-        LLaDA2ImageDecoderStageConfig(
-            name=IMAGE_DECODE_STAGE,
-            process=IMAGE_DECODE_STAGE,
-            factory_path=f"{_PKG}.stages.create_image_decode_executor",
-            factory=LLaDA2ImageDecoderFactoryArgs(),
-            gpu=0,
-            gpu_memory_fraction=0.2,
-            next=INTERLEAVED_COLLECT_STAGE,
-        ),
-        StageConfig(
-            name=INTERLEAVED_COLLECT_STAGE,
-            process="pipeline",
-            factory_path=f"{_PKG}.interleaved.create_interleaved_collector_executor",
-            terminal=True,
-        ),
-    ]
-
-
 EntryClass = LLaDA2UniOmniPipelineConfig
 
 Variants = {
     "text": LLaDA2UniPipelineConfig,
     "omni": LLaDA2UniOmniPipelineConfig,
-    "interleaved": LLaDA2UniInterleavedPipelineConfig,
 }
