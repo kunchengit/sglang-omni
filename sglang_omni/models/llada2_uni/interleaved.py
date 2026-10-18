@@ -346,18 +346,9 @@ def advance_image(
     else:
         pass
     eoi_id = token_id(tokenizer, "<|/image|>")
-    eoi_positions = [
-        index for index, token_id in enumerate(output_ids) if token_id == eoi_id
-    ]
-    if len(eoi_positions) > 1:
-        raise ValueError("interleaved image phase produced multiple EOI tokens")
-    else:
-        pass
-    if eoi_positions and eoi_positions[0] != len(output_ids) - 1:
-        raise ValueError("interleaved image phase produced tokens after EOI")
-    else:
-        pass
-    image_ids = output_ids[: eoi_positions[0]] if eoi_positions else output_ids
+    # An image pass emits image tokens only, so the grid, not a sampled EOI,
+    # ends the frame.
+    image_ids = output_ids
     remaining = int(current["remaining_image_tokens"])
     if len(image_ids) > remaining:
         raise ValueError(
@@ -368,30 +359,18 @@ def advance_image(
     if any(
         token_id < state.stream_state["image_token_offset"] for token_id in image_ids
     ):
-        raise ValueError(
-            "interleaved image phase produced a non-image token before EOI"
-        )
+        raise ValueError("interleaved image phase produced a non-image token")
     else:
         pass
     accumulated = list(current["vq_tokens"]) + image_ids
     remaining -= len(image_ids)
-    if not eoi_positions:
-        if remaining == 0:
-            raise ValueError("interleaved image phase completed VQ tokens without EOI")
-        else:
-            pass
+    if remaining > 0:
         append_image_phase_tokens(state, interleaved, image_ids)
         current["vq_tokens"] = accumulated
         current["remaining_image_tokens"] = remaining
         state.thinker_out = None
         state.engine_outputs.pop("thinker", None)
         return
-    else:
-        pass
-    if remaining != 0:
-        raise ValueError(
-            f"interleaved image phase emitted EOI with {remaining} VQ tokens remaining"
-        )
     else:
         pass
     append_image_phase_tokens(state, interleaved, image_ids + [eoi_id])

@@ -73,48 +73,44 @@ def advance(state, ids):
     )
 
 
-def test_image_request_uses_current_cfg_and_eoi_only_stopping():
+def test_image_phase_generates_the_frame_grid_and_closes_it_with_eoi():
     pytest.importorskip("sglang")
     from sglang_omni.models.llada2_uni.request_builders import (
         build_dllm_thinker_request,
     )
 
+    def image_request(state):
+        return build_dllm_thinker_request(
+            state,
+            params={"stop": ["stop"], "stop_token_ids": [666]},
+            tokenizer=Tokenizer(),
+            vocab_size=IMAGE_TOKEN_OFFSET + 16,
+            dllm_config=SimpleNamespace(
+                block_size=4, mask_id=99, requires_separate_context_encoding=False
+            ),
+            request_id="story",
+        ).req
+
     state = LLaDA2UniPipelineState.from_dict(initial_payload().data)
     advance(state, [71, 10, 22, 23, 12])
-    req = build_dllm_thinker_request(
-        state,
-        params={"stop": ["stop"], "stop_token_ids": [666]},
-        tokenizer=Tokenizer(),
-        vocab_size=IMAGE_TOKEN_OFFSET + 16,
-        dllm_config=SimpleNamespace(
-            block_size=4, mask_id=99, requires_separate_context_encoding=False
-        ),
-        request_id="story",
-    ).req
-    assert req.tokenizer is None and req.eos_token_ids == {11}
+    req = image_request(state)
+    # A text-to-image pass over the frame's 2x3 grid.
+    assert req._task_kind == "t2i"  # noqa: leading-underscore  # DLLM protocol
+    assert req.sampling_params.max_new_tokens == 6
     assert req.sampling_params.stop_strs == []
-    assert req.sampling_params.stop_token_ids == {11}
-    assert req.sampling_params.max_new_tokens == 1500
+    assert not req.sampling_params.stop_token_ids
     assert len(req.origin_input_ids) == len(
         req._uncond_input_ids
     )  # noqa: leading-underscore  # DLLM protocol
-    assert req._cfg_scale == 4.0 and req._allowed_stop_token_ids == (
-        11,
-    )  # noqa: leading-underscore  # DLLM protocol
+    assert req._cfg_scale == 4.0  # noqa: leading-underscore  # DLLM protocol
     assert req._dllm_steps == 32  # noqa: leading-underscore  # DLLM protocol
 
     advance(state, [IMAGE_TOKEN_OFFSET, IMAGE_TOKEN_OFFSET + 1])
-    req = build_dllm_thinker_request(
-        state,
-        params={},
-        tokenizer=Tokenizer(),
-        vocab_size=IMAGE_TOKEN_OFFSET + 16,
-        dllm_config=SimpleNamespace(
-            block_size=4, mask_id=99, requires_separate_context_encoding=False
-        ),
-        request_id="story",
-    ).req
-    assert req.sampling_params.max_new_tokens == 1498
+    assert image_request(state).sampling_params.max_new_tokens == 4
+    advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(2, 6)])
+    interleaved = state.stream_state["interleaved"]
+    assert interleaved["phase"] == "text" and interleaved["emit_frame"]
+    assert state.prompt["input_ids"][0, -1].item() == 11
 
 
 @pytest.mark.parametrize(
@@ -126,7 +122,7 @@ def test_frame_cfg_preserves_unconditional_and_history_branches(scale, mode):
     config.update(cfg_scale=0.0, cfg_text_scale=scale, cfg_image_scale=0.0)
     advance(state, [71, 10, 22, 23, 12])
     assert state.stream_state["interleaved"]["cfg_plan"]["mode"] == mode
-    advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(6)] + [11])
+    advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(6)])
     advance(state, [72, 10, 22, 23, 12])
     plan = state.stream_state["interleaved"]["cfg_plan"]
     assert plan["mode"] == ("editing" if scale > 0 else "simple")
@@ -165,7 +161,7 @@ def test_frames_decode_while_the_thinker_writes_and_segments_keep_model_order():
     header, frame = [71, 10, 22, 23, 12], [IMAGE_TOKEN_OFFSET + i for i in range(6)]
     step = adapter.advance(context, "think", think(text_phase, header))
     assert step.outputs == (UMMOutput("text", "71"),)
-    step = adapter.advance(context, "think", think(step.dispatches[0], frame + [11]))
+    step = adapter.advance(context, "think", think(step.dispatches[0], frame))
     thinker, decode = step.dispatches
     assert (thinker.phase, decode.phase) == ("think", "decode")
 
@@ -173,7 +169,7 @@ def test_frames_decode_while_the_thinker_writes_and_segments_keep_model_order():
     # for the decoder, which runs one frame of a request at a time.
     step = adapter.advance(context, "think", think(thinker, [72, 10, 22, 23, 12]))
     assert step.outputs == ()
-    step = adapter.advance(context, "think", think(step.dispatches[0], frame + [11]))
+    step = adapter.advance(context, "think", think(step.dispatches[0], frame))
     assert [dispatch.phase for dispatch in step.dispatches] == ["think"]
     step = adapter.advance(context, "think", think(step.dispatches[0], [75, 2]))
     assert step.outputs == () and step.dispatches == ()

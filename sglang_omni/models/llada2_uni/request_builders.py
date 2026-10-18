@@ -48,15 +48,12 @@ class LLaDA2UniRequest(DllmRequest):
     """LLaDA generation settings shared by request building and unmasking."""
 
     _dllm_steps: int | None = None  # noqa: leading-underscore  # DLLM protocol
-    _task_kind: Literal[
-        "chat", "t2i", "edit", "thinking", "interleaved", "interleaved_image"
-    ] = "chat"  # noqa: leading-underscore  # DLLM protocol
+    _task_kind: Literal["chat", "t2i", "edit", "thinking", "interleaved"] = (
+        "chat"  # noqa: leading-underscore  # DLLM protocol
+    )
     _cfg_scale: float = 4.0  # noqa: leading-underscore  # DLLM protocol
     _cfg_image_scale: float = 0.0  # noqa: leading-underscore  # DLLM protocol
     _cfg_rescale: float = 0.7  # noqa: leading-underscore  # DLLM protocol
-    _allowed_stop_token_ids: tuple[
-        int, ...
-    ] = ()  # noqa: leading-underscore  # DLLM protocol
 
 
 def build_encoder_request(
@@ -183,7 +180,6 @@ def build_dllm_thinker_request(
             pass
         max_new_tokens = min(interleaved["text_max_new_tokens"], remaining)
     elif image_phase:
-        generated = len(interleaved["current_frame"]["vq_tokens"])
         plan = interleaved["cfg_plan"]
         branches = {"conditional": list(input_ids_array)}
         branches.update(
@@ -193,8 +189,9 @@ def build_dllm_thinker_request(
             }
         )
         length = max(map(len, branches.values()))
+        # The frame's grid, image tokens only, as a text-to-image pass.
         max_new_tokens = min(
-            interleaved["image_max_new_tokens"] - generated,
+            interleaved["current_frame"]["remaining_image_tokens"],
             interleaved["max_seq_len"] - length,
         )
         if max_new_tokens <= 0:
@@ -243,11 +240,7 @@ def build_dllm_thinker_request(
         min_p=params.get("min_p", 0.0),
         repetition_penalty=params.get("repetition_penalty", 1.0),
         stop=[] if image_phase else params.get("stop") or [],
-        stop_token_ids=(
-            [tokenizer.convert_tokens_to_ids("<|/image|>")]
-            if image_phase
-            else params.get("stop_token_ids") or []
-        ),
+        stop_token_ids=[] if image_phase else params.get("stop_token_ids") or [],
         sampling_seed=params.get("seed"),
     )
     sampling_params.normalize(tokenizer)
@@ -259,8 +252,6 @@ def build_dllm_thinker_request(
         eos_token_ids = (eos_token_ids or set()) | {
             tokenizer.convert_tokens_to_ids(BOI_TOKEN)
         }
-    elif image_phase:
-        eos_token_ids = {tokenizer.convert_tokens_to_ids("<|/image|>")}
     else:
         pass
 
@@ -274,8 +265,7 @@ def build_dllm_thinker_request(
         eos_token_ids=eos_token_ids,
         dllm_config=dllm_config,
     )
-    # note (Anmuliar): Image passes must stop at EOI, not tokenizer EOS aliases.
-    req.tokenizer = None if image_phase else tokenizer
+    req.tokenizer = tokenizer
 
     req.omni_model_inputs = None
     req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -283,15 +273,10 @@ def build_dllm_thinker_request(
         "thinking" if state.thinking_phase == "text" else state.task_kind
     )
     if image_phase:
-        req._task_kind = (
-            "interleaved_image"  # noqa: leading-underscore  # DLLM protocol
-        )
+        req._task_kind = "t2i"  # noqa: leading-underscore  # DLLM protocol
         req._dllm_left_pad_len = (
             conditional_pad  # noqa: leading-underscore  # DLLM protocol
         )
-        req._allowed_stop_token_ids = tuple(
-            eos_token_ids
-        )  # noqa: leading-underscore  # DLLM protocol
     else:
         pass
     if stream_state.get("dllm_steps") is not None:
