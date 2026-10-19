@@ -147,7 +147,8 @@ The interleaved variant answers with text and images in one response. Each
 image decodes while the model writes the next text.
 
 ```bash
-sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --variant interleaved --port 8000
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --variant interleaved --port 8000 \
+  --thinker.engine.enable_torch_compile false
 ```
 
 Send text-only `messages` to `POST /v1/chat/completions`:
