@@ -672,12 +672,13 @@ class UMMController(
             )
             payloads[stage] = StagePayload(request_id, request, request.inputs)
             started[stage] = continuation
-        if len(payloads) == 1:
+        if len(payloads) == 1 and not context.expected:
             (result,) = payloads.values()
         else:
             # One routing pass sends every payload with the request's replica
-            # bindings, which routing a result clears.
-            result = RoutedPayloads(payloads)
+            # bindings. Another running phase may return before the stage
+            # routes this result, so the stage keeps the request's state.
+            result = RoutedPayloads(payloads, keep_request_state=True)
         return result, added, started
 
 

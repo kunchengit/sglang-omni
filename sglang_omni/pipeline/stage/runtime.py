@@ -1744,6 +1744,7 @@ class Stage:
         else:
             pass
         routes_to_self = False
+        keeps_state = False
         if next_stages is None:
             # Terminal: notify coordinator
             _emit_event(
@@ -1770,11 +1771,13 @@ class Stage:
                 next_stages = [next_stages]
             else:
                 pass
+            routed = result if isinstance(result, RoutedPayloads) else None
+            keeps_state = routed is not None and routed.keep_request_state
             routes_to_self = any(
                 self.resolve_target_instance(request_id, target) == self.name
                 for target in next_stages
             )
-            if routes_to_self:
+            if routes_to_self and not keeps_state:
                 # A local dispatch can register the next pass synchronously.
                 # Keep its replica assignment but retire the completed pass first.
                 self.clear_request_state(request_id, keep_replica_bindings=True)
@@ -1791,11 +1794,7 @@ class Stage:
                 await self.send_to_stage(
                     request_id,
                     target,
-                    (
-                        result.payloads[target]
-                        if isinstance(result, RoutedPayloads)
-                        else result
-                    ),
+                    result if routed is None else routed.payloads[target],
                     allow_local_object=is_single_target,
                     allow_projected_local_object=not is_single_target,
                     stream_targets_for_request=stream_targets_for_request,
@@ -1805,7 +1804,7 @@ class Stage:
                 else:
                     pass
 
-        if not routes_to_self:
+        if not routes_to_self and not keeps_state:
             self.clear_request_state(request_id)
         else:
             pass

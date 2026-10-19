@@ -873,6 +873,42 @@ async def test_parallel_phases_leave_in_one_routing_pass_and_join_once():
 
 
 @pytest.mark.asyncio
+async def test_phase_results_queued_together_both_leave_the_stage():
+    class Rewriter(ParallelAdapter):
+        """The first text starts another turn while the image still decodes."""
+
+        def advance(self, context, phase, result):
+            step = super().advance(context, phase, result)
+            if phase == "reason" and result["text"] == "plan":
+                turn = UMMDispatch("reason", OmniRequest({"think": True}))
+                return replace(step, dispatches=(turn,))
+            else:
+                return step
+
+    controller = make_controller(Rewriter())
+    orchestrator = make_stage(
+        name="orchestrator",
+        get_next=route_umm,
+        scheduler=controller,
+        stream_targets=["output"],
+        get_stream_done_targets=umm_stream_done_targets,
+    )
+    orchestrator.send_to_stage = AsyncMock()
+    orchestrator.send_stream_to_target = AsyncMock()
+    started = controller.advance(initial(stream=True))
+    # Both phase results reached the stage before either one is routed.
+    orchestrator.active_requests.add("req")
+    for phase, data in (("reasoner", {"text": "plan"}), ("generator", {"media": "a"})):
+        result = controller.advance(reply(started.payloads[phase], data))
+        controller.emit_result("req", result, controller.outbox)
+    orchestrator.end_outbox_drain()
+    await orchestrator.drain_outbox_external()
+    sent = orchestrator.send_stream_to_target.await_args_list
+    assert [call.args[1]["kind"] for call in sent] == ["text", "image"]
+    assert orchestrator.send_to_stage.await_count == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("ending", ["deadline", "shed"])
 async def test_waiting_controller_reports_its_deadline_through_its_stage(ending):
     clock = [0.0]
