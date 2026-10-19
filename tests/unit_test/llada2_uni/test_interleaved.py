@@ -12,6 +12,7 @@ from sglang_omni.models.llada2_uni.components.preprocessor import (
 )
 from sglang_omni.models.llada2_uni.config import LLaDA2UniInterleavedPipelineConfig
 from sglang_omni.models.llada2_uni.interleaved import advance_interleaved_state
+from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.models.llada2_uni.umm import LLaDA2UniUMMAdapter
 from sglang_omni.pipeline.umm import UMMContext, UMMOutput, UMMRequestError
@@ -153,9 +154,9 @@ def umm_context(max_frames=3):
 def test_frames_decode_while_the_thinker_writes_and_segments_keep_model_order():
     adapter = LLaDA2UniUMMAdapter("m")
     context = umm_context()
-    step = adapter.start(context)
-    assert step.phase == "prepare"
-    step = adapter.advance(context, "prepare", preprocess(step.request).data)
+    start = adapter.start(context)
+    assert start.phase == "prepare"
+    step = adapter.advance(context, "prepare", preprocess(start.request).data)
     (text_phase,) = step.dispatches
 
     header, frame = [71, 10, 22, 23, 12], [IMAGE_TOKEN_OFFSET + i for i in range(6)]
@@ -173,6 +174,8 @@ def test_frames_decode_while_the_thinker_writes_and_segments_keep_model_order():
     assert [dispatch.phase for dispatch in step.dispatches] == ["think"]
     step = adapter.advance(context, "think", think(step.dispatches[0], [75, 2]))
     assert step.outputs == () and step.dispatches == ()
+    # The held text and the waiting frame's image tokens count as retained.
+    assert adapter.usage(context) >= len("7275") + len(frame)
 
     step = adapter.advance(context, "decode", image("first"))
     assert step.outputs == (
@@ -180,9 +183,16 @@ def test_frames_decode_while_the_thinker_writes_and_segments_keep_model_order():
         UMMOutput("text", "72"),
     )
     (second,) = step.dispatches
-    frames = [d.request.inputs["stream_state"]["interleaved"] for d in (decode, second)]
     assert second.phase == "decode"
-    assert [frame["frame_index"] for frame in frames] == [1, 2]
+    for index, dispatch in enumerate((decode, second), start=1):
+        state = LLaDA2UniPipelineState.from_dict(dispatch.request.inputs)
+        assert extract_image_vq_tokens(state) == (
+            list(range(6)),
+            2,
+            3,
+            start.request.metadata["image_generation"],
+        )
+        assert state.stream_state["interleaved"]["segments"][-1]["frame_index"] == index
     step = adapter.advance(context, "decode", image("second"))
     assert step.outputs == (
         UMMOutput("image", image("second")),

@@ -9,7 +9,7 @@ text, and segments leave in the order the model wrote them.
 
 from __future__ import annotations
 
-import copy
+import json
 from collections import deque
 from dataclasses import dataclass, field, replace
 
@@ -53,6 +53,22 @@ def interleaved_options(request: OmniRequest) -> dict[str, object]:
     return params.model_dump()
 
 
+def frame_state(state: dict) -> dict[str, object]:
+    """The fields the image decoder reads for the frame the thinker just
+    finished, so a frame waiting for the decoder keeps only its own tokens."""
+    interleaved = state["stream_state"]["interleaved"]
+    return {
+        "task_kind": state["task_kind"],
+        "thinker_out": {"output_ids": list(state["thinker_out"]["output_ids"])},
+        "stream_state": {
+            "interleaved": {"segments": [dict(interleaved["segments"][-1])]}
+        },
+        "request_metadata": {
+            "image_generation": dict(state["request_metadata"]["image_generation"])
+        },
+    }
+
+
 def phases_needed(max_frames: int) -> int:
     """Preparation, a text and an image phase per frame, the closing text
     phase, and one decode per frame."""
@@ -64,8 +80,9 @@ class InterleavedRun:
     # Outputs in model order. None marks an image still decoding.
     slots: list[UMMOutput | None] = field(default_factory=list)
     emitted: int = 0
-    # Frames waiting for the decoder, which runs one frame of a request at a time.
-    waiting: deque[tuple[int, OmniRequest]] = field(default_factory=deque)
+    # Frames waiting for the decoder, which runs one frame of a request at a
+    # time, with their slot and retained bytes.
+    waiting: deque[tuple[int, OmniRequest, int]] = field(default_factory=deque)
     decoding: int | None = None
     thinking: str | None = None
     done: bool = False
@@ -113,7 +130,7 @@ class LLaDA2UniUMMAdapter:
         else:
             raise ValueError(f"LLaDA2-Uni adapter received unexpected phase {phase!r}")
         if run.decoding is None and run.waiting:
-            run.decoding, request = run.waiting.popleft()
+            run.decoding, request, _ = run.waiting.popleft()
             dispatches.append(UMMDispatch(DECODE, request))
         else:
             pass
@@ -139,10 +156,12 @@ class LLaDA2UniUMMAdapter:
             self.add_text(run, interleaved["current_frame"]["text"])
         elif interleaved.get("emit_frame"):
             run.slots.append(None)
+            frame = frame_state(state)
             request = OmniRequest(
-                copy.deepcopy(state), context.request.params, context.request.metadata
+                frame, context.request.params, context.request.metadata
             )
-            run.waiting.append((len(run.slots) - 1, request))
+            size = len(json.dumps(frame, ensure_ascii=False).encode("utf-8"))
+            run.waiting.append((len(run.slots) - 1, request, size))
         else:
             pass
         if interleaved.get("done"):
@@ -164,16 +183,18 @@ class LLaDA2UniUMMAdapter:
             pass
 
     def usage(self, context: UMMContext) -> int:
-        """Bytes of text held behind an image that is still decoding."""
+        """Bytes of text held behind an image that is still decoding, and of
+        the frames waiting for the decoder."""
         run = self.runs.get(context.execution_id)
         if run is None:
             return 0
         else:
-            return sum(
+            held = sum(
                 len(slot.data.encode("utf-8"))
                 for slot in run.slots[run.emitted :]
                 if slot is not None and isinstance(slot.data, str)
             )
+            return held + sum(size for _, _, size in run.waiting)
 
     def close(self, context: UMMContext, reason: CloseReason) -> None:
         self.runs.pop(context.execution_id, None)
