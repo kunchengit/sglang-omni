@@ -13,6 +13,7 @@ else:
 from sglang_omni.models.llada2_uni.components.preprocessor import IMAGE_TOKEN_OFFSET
 from sglang_omni.models.llada2_uni.config import THINKER_STAGE
 from sglang_omni.models.llada2_uni.payload_types import (
+    ImageGrid,
     LLaDA2UniEvent,
     LLaDA2UniPipelineState,
     ThinkerOutput,
@@ -41,6 +42,7 @@ def extract_image_vq_tokens(
         return None
     else:
         pass
+    image_grid: ImageGrid
     if state.task_kind == "interleaved":
         image_grid = state.stream_state["interleaved"]["segments"][-1]
     else:

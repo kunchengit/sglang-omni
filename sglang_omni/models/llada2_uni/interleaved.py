@@ -12,7 +12,10 @@ import torch
 from pydantic import BaseModel, ConfigDict, Field
 from transformers import PreTrainedTokenizerBase
 
-from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
+from sglang_omni.models.llada2_uni.payload_types import (
+    InterleavedState,
+    LLaDA2UniPipelineState,
+)
 
 SYSTEM_PROMPT_INTERLEAVED = "You are a interleaved generation assistant."
 UNCONDITION_TOKEN = "<uncondition>"
@@ -404,7 +407,7 @@ def advance_image(
 
 def append_image_phase_tokens(
     state: LLaDA2UniPipelineState,
-    interleaved: dict[str, object],
+    interleaved: InterleavedState,
     token_ids: list[int],
 ) -> None:
     input_ids = state.prompt["input_ids"]
