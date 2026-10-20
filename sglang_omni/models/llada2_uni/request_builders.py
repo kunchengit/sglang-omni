@@ -223,7 +223,8 @@ def build_dllm_thinker_request(
     req._task_kind = (  # noqa: leading-underscore  # DLLM protocol
         "thinking" if state.thinking_phase == "text" else state.task_kind
     )
-    if stream_state.get("dllm_steps") is not None:
+    # dllm_steps sets the image pass, the thinking text keeps the block schedule.
+    if stream_state.get("dllm_steps") is not None and state.thinking_phase != "text":
         req._dllm_steps = int(
             stream_state["dllm_steps"]
         )  # noqa: leading-underscore  # DLLM protocol
