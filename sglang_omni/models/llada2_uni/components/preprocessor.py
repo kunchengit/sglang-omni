@@ -32,6 +32,7 @@ from sglang_omni.models.llada2_uni.payload_types import (
     SkippedEncoderInputs,
 )
 from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.pipeline.umm import UMMRequestError
 from sglang_omni.preprocessing.image import (
     compute_image_cache_key,
     ensure_image_list_async,
@@ -359,17 +360,21 @@ class LLaDA2Preprocessor:
         else:
             pass
         task_kind = "chat"
-        if (
+        stage_params = request.params.get("stage_params")
+        wants_interleaved = (
             isinstance(image_generation, dict)
             and image_generation.get("mode") == "interleaved"
-        ):
-            if not self.interleaved:
-                raise ValueError(
-                    "Interleaved generation needs the interleaved pipeline, "
-                    "sgl-omni serve --variant interleaved"
-                )
-            else:
-                pass
+        )
+        if (
+            wants_interleaved
+            or isinstance(stage_params, dict)
+            and "orchestrator" in stage_params
+        ) and not self.interleaved:
+            raise UMMRequestError(
+                "Interleaved generation needs the interleaved pipeline, "
+                "sgl-omni serve --variant interleaved"
+            )
+        elif wants_interleaved:
             config = InterleavedGenerationParams.model_validate(image_generation)
             task_kind = "interleaved"
         elif isinstance(image_generation, dict):

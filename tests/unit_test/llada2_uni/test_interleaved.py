@@ -230,6 +230,11 @@ def test_interleaved_variant_runs_the_adapter_and_refuses_what_it_cannot_serve(
     context.request.inputs = {"messages": STORY, "images": ["cat.png"]}
     with pytest.raises(UMMRequestError, match="text-only input"):
         LLaDA2UniUMMAdapter("m").start(context)
-    request = OmniRequest(STORY, {}, {"image_generation": CONFIG})
-    with pytest.raises(ValueError, match="--variant interleaved"):
-        preprocess(request, interleaved=False)
+    # Other variants refuse interleaved controls as a bad request, including
+    # the stage_params.orchestrator a chat client sends.
+    for request in (
+        OmniRequest(STORY, {}, {"image_generation": CONFIG}),
+        OmniRequest(STORY, {"stage_params": {"orchestrator": {"max_frames": 3}}}, {}),
+    ):
+        with pytest.raises(UMMRequestError, match="--variant interleaved"):
+            preprocess(request, interleaved=False)
