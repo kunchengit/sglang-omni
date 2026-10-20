@@ -23,7 +23,6 @@ from sglang_omni.models.llada2_uni.components.preprocessor import (
     SYSTEM_PROMPT_T2I_THINKING,
     UNCOND_TEXT,
     align_cfg_unconditional_input_ids,
-    validate_prompt_seq_len,
 )
 from sglang_omni.models.llada2_uni.config import (
     DECODE_STAGE,
@@ -279,7 +278,8 @@ def build_dllm_thinker_request(
         )
     else:
         pass
-    if stream_state.get("dllm_steps") is not None:
+    # dllm_steps sets the image pass, the thinking text keeps the block schedule.
+    if stream_state.get("dllm_steps") is not None and state.thinking_phase != "text":
         req._dllm_steps = int(
             stream_state["dllm_steps"]
         )  # noqa: leading-underscore  # DLLM protocol
@@ -387,11 +387,6 @@ def thinking_phase1_to_phase2(
     )
     phase2_tensor = torch.tensor([phase2_ids], dtype=torch.long)
     info = state.stream_state["image_info"][0]
-    validate_prompt_seq_len(
-        phase2_tensor,
-        max_seq_len=state.stream_state.get("max_seq_len"),
-        max_new_tokens=info["grid_h"] * info["grid_w"],
-    )
     cfg_inputs = {}
     if state.stream_state["cfg_scale"] > 1.0:
         # The checkpoint's thinking CFG template omits spaces between role markers.

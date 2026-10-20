@@ -706,7 +706,13 @@ def test_thinking_stops_at_boundary_then_generates_image(
         request_id="thinking-image",
         request=OmniRequest(
             inputs={"messages": [{"role": "user", "content": "A red sailboat."}]},
-            metadata={"image_generation": {"mode": "thinking", "cfg_scale": cfg_scale}},
+            metadata={
+                "image_generation": {
+                    "mode": "thinking",
+                    "cfg_scale": cfg_scale,
+                    "dllm_steps": 8,
+                }
+            },
             params={},
         ),
         data={},
@@ -732,6 +738,10 @@ def test_thinking_stops_at_boundary_then_generates_image(
         text_request.req._task_kind == "thinking"
     )  # noqa: leading-underscore  # DLLM protocol
     assert preprocessor.boi_id in text_request.req.eos_token_ids
+    # dllm_steps sets the image pass, the thinking text keeps the block schedule.
+    assert (
+        text_request.req._dllm_steps is None
+    )  # noqa: leading-underscore  # DLLM protocol
     assert (
         text_request.req._uncond_input_ids is None
     )  # noqa: leading-underscore  # DLLM protocol
@@ -748,6 +758,9 @@ def test_thinking_stops_at_boundary_then_generates_image(
     image_request = build(image_payload)
     assert image_request.req.origin_input_ids[-1] == preprocessor.boi_id
     assert image_request.req.sampling_params.max_new_tokens == 1024
+    assert (
+        image_request.req._dllm_steps == 8
+    )  # noqa: leading-underscore  # DLLM protocol
     assert (
         image_request.req._task_kind == "t2i"
     )  # noqa: leading-underscore  # DLLM protocol
