@@ -98,6 +98,9 @@ Image endpoints imply image output; no `modalities` field is required.
 `/v1/chat/completions` retains text and image-understanding requests; use the
 image endpoints for T2I and editing.
 
+The response's `usage` counts prompt and generated tokens, including both
+passes in thinking mode.
+
 Text-to-image supports `mode: "normal"` and `mode: "thinking"`. Editing supports
 only `mode: "normal"`. Generation mode is separate from `decode_mode`, which
 selects `normal` or `decoder-turbo` diffusion decoding.

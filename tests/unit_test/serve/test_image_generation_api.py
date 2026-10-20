@@ -188,6 +188,9 @@ def test_native_image_routes_preserve_generation_controls(
         return
     assert response.status_code == 200, response.text
     assert response.json()["data"][0]["b64_json"] == "cG5n"
+    usage = response.json()["usage"]
+    assert (usage["prompt_tokens"], usage["completion_tokens"]) == (3, 2)
+    assert usage["total_tokens"] == 5
     request = coordinator.requests[0]
     assert request.metadata["output_modalities"] == ["image"]
     assert request.params["stream"] is False
