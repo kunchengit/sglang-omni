@@ -32,19 +32,19 @@ Native SGLang routing is selected separately:
 
 The default retains the reference Torch routing from #2257. Native SGLang TopK is opt-in; see the [routing comparison](#routing-comparison) below for its numerical and accuracy implications.
 
-For the supplied BF16 H20-3e TP2 tuning configurations (SGLang 0.5.20 / Triton 3.7.1):
+For the supplied BF16 H20-3e TP2 tuning configurations:
 
 ```bash
 export SGLANG_MOE_CONFIG_DIR=/absolute/path/to/sglang-omni/examples/tuning/llada2_uni/h20_tp2
 ```
 
-Replace the repository path; point above `configs/`. Omit this setting for other hardware or configurations without separate validation.
+Point above `configs/` and apply this setting only to TP2 on the validated hardware. The files were tuned with Triton 3.7.1; SGLang 0.5.22 / Triton 3.8.0 loads them through its version fallback. This is reuse of the shipped configuration, not a fresh Triton 3.8 tune. Confirm both `E=256,N=256` up/down configuration paths in the worker logs.
 
 ## Validation
 
-- Thinker TP regression: **69 passed, 1 skipped**. The routing selector added in this PR passed 9 focused precision tests.
-- With TP2, decode graphs enabled and compilation disabled, default Torch routing and the explicit SGLang override each completed one T2I, one original-image edit and one MMMU request. All six outputs matched their respective routing baselines. These are startup/output-regression checks, not full-dataset quality evaluations.
-- With native SGLang routing, TP2, graphs on, and compile off: GenEval macro score **0.88023** (487/553 correct); original-image ImgEdit **3.54093** (737/737 completed). These are not full-dataset results for the default Torch route.
+- Rebased on main `137eaa97b` at `ee1b47041`, with all 11 TP patches unchanged. Remote focused tests: **781 passed, 47 skipped, 13 deselected**. Changed-file lint passed; all-files checks passed except Rust formatting, unavailable locally because `cargo` is absent. No Rust files changed.
+- Both TP1 and TP2 completed native T2I and original-image edit requests on the rebased code. All outputs were 1024x1024 PNGs; each task's three measured repeats had identical RGB hashes within a TP setting. Visual inspection found coherent outputs, with composition/texture differences between TP1 and TP2. This is sample validation, not a new full-dataset accuracy score.
+- Earlier full-dataset evaluation with native SGLang routing, TP2, graphs on, and compile off: GenEval macro score **0.88023** (487/553 correct); original-image ImgEdit **3.54093** (737/737 completed). These results predate the current main rebase and do not cover the default Torch route.
 
 ### Routing comparison
 
@@ -61,26 +61,26 @@ Reference Torch TP1 reproduced all answer texts from #2257; separate API judgmen
 
 These are single-run API-judge results, including fallback judgments. Neither paired routing comparison reached the 0.05 significance threshold (TP1: p=0.314; TP2: p=0.170), and equal TP1/TP2 totals do not imply identical answers. They do not establish a universal accuracy regression from SGLang routing. Torch remains the default to preserve reference routing behavior; native TopK is an explicit performance option.
 
-The full-dataset comparison predates the startup selector and is not a fresh evaluation of the current PR head. The selector checks above verify startup and output regression separately.
+The full-dataset comparison predates the startup selector and is not a fresh evaluation of the current PR head.
 
 ## Performance
 
-Measured on this PR's thinker TP implementation on H20-3e with BF16, **native SGLang TopK**, decode graphs enabled, and compilation disabled. Both deployments use the same checkpoint, prompt/source image, seed, and generation settings. The decoder remains SP1 on a separate GPU with `torch_sdpa`.
+Measured on `ee1b47041` after the main rebase, using H20-3e, SGLang 0.5.22, Torch 2.14.1+cu130, Triton 3.8.0, BF16, **native SGLang TopK**, decode graphs enabled, and compilation disabled. TP1 uses GPU0; TP2 uses GPU0/1. The SGLang `torch_sdpa` decoder remains SP1 on GPU0 and executes after the thinker.
 
-Sequential runs on reserved GPUs; 3 warmups and 7 measured requests per case. Values are median seconds.
+Sequential runs on exclusive GPUs with identical inputs and settings; 2 warmups and 3 measured requests per case. Values are median seconds.
 
 | Task | Thinker TP1 | Thinker TP2 | Speedup | HTTP E2E TP1 | HTTP E2E TP2 | Speedup |
 | --- | --- | --- | --- | --- | --- | --- |
-| T2I | 6.529 | 5.097 | 1.28x | 15.525 | 14.086 | 1.10x |
-| Edit | 3.105 | 2.704 | 1.15x | 12.197 | 11.721 | 1.04x |
+| T2I | 6.663 | 5.351 | 1.25x | 15.641 | 14.349 | 1.09x |
+| Edit | 3.186 | 2.852 | 1.12x | 12.214 | 11.883 | 1.03x |
 
 Settings: seed 42, CFG rescale 0.7, 32 dLLM steps, and 8 decoder-turbo steps. T2I uses CFG 4.0 at 1024x1024; edit uses text CFG 4.0 and image CFG 1.5, with dimensions derived from the source.
 
-HTTP timing excludes client image saving. Thinker timings come from a separate stage-event run without Torch profiler. TP2 loads the supplied MoE tuning configurations; TP1 uses the installed configuration root. These results measure those deployments, not the default Torch route or the isolated benefit of tuning.
+Thinker timings cover dispatch through completion using request events without Torch profiler; HTTP timing covers the same requests and excludes client image saving. TP2 loads the repository's up/down MoE configurations through the Triton 3.7.1 fallback; TP1 uses the installed Triton 3.5.1 configuration fallback. These results measure the documented deployments, not the default Torch route, isolated kernel time, or the isolated benefit of tuning.
 
-### TP2 routing latency
+### Historical TP2 routing latency
 
-The routing variants above were also compared sequentially at TP2 using the image workloads and timing procedure in this section. Both used the same GPUs, checkpoint, generation settings and H20 TP2 MoE tuning configurations, with decode graphs enabled and compilation disabled. The decoder remained SP1 on a separate GPU.
+An earlier routing comparison used matched image requests, 3 warmups and 7 repeats, with TP2, decode graphs enabled, compilation disabled, and H20 MoE tuning. Its SP1 decoder ran on a separate GPU; these are not measurements of the rebased head.
 
 | Task | Reference Torch HTTP E2E (s) | Native SGLang TopK HTTP E2E (s) |
 | --- | --- | --- |
@@ -91,7 +91,7 @@ This separate comparison measures routing-dependent end-to-end latency for these
 
 ## Dependencies
 
-Depends on #1502. Decoder SP (#1501) is a separate PR. Expert parallelism, quantization, and request batching are outside this scope.
+Based on main, which already includes the prerequisite image, thinking, and interleaved pipelines. Decoder SP (#1501) remains a separate PR. Expert parallelism, quantization, and request batching are outside this scope.
 
 Tracked in #2207; continues #445.
 
