@@ -1,0 +1,23 @@
+sglang_omni/models/llada2_uni/bootstrap.py
+  s_f6da58639af786::t_528865b4c00a61 12-13,54-62
+  s_f6da58639af786::t_00bb799ddda674 63-64
+tests/unit_test/llada2_uni/test_cfg.py
+  s_f6da58639af786::t_528865b4c00a61 26,35,53-76
+  s_f6da58639af786::t_2bd6c6e35914fb 77-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "68974a8fa061aa371b5cb4abcd23a90efb4043b0",
+  "prompts": {},
+  "sessions": {
+    "s_f6da58639af786": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f832f-9523-77d0-bd77-990ed55808b0",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
