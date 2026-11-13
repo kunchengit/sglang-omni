@@ -1,0 +1,21 @@
+sglang_omni/serve/openai_errors.py
+  s_f6da58639af786::t_7dd4afbb943ee3 16
+tests/unit_test/serve/test_openai_errors.py
+  s_f6da58639af786::t_7dd4afbb943ee3 53-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "0daaa7f5c8ff8d63a399a1374b18340511e2251f",
+  "prompts": {},
+  "sessions": {
+    "s_f6da58639af786": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f832f-9523-77d0-bd77-990ed55808b0",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
