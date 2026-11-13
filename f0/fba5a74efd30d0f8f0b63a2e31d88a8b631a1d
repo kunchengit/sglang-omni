@@ -1,0 +1,29 @@
+tests/unit_test/llada2_uni/test_thinker_precision.py
+  s_f6da58639af786::t_42ed2248d794d5 70
+sglang_omni/scheduling/types.py
+  s_f6da58639af786::t_c4949d3ada5d4d 9-18,96-106,120,127-128
+sglang_omni/platforms/interface.py
+  s_f6da58639af786::t_93f9fcc2af8c0a 10,48-67,163-165
+  s_f6da58639af786::t_7924327ee13217 166
+sglang_omni/platforms/cuda.py
+  s_f6da58639af786::t_4af1892c92b358 11-15,149-152
+  s_f6da58639af786::t_69f7f67f8aac47 153
+sglang_omni/model_runner/sglang_model_runner.py
+  s_f6da58639af786::t_627a0c820d7050 4,13,24,27-35,42,46,50,169-188,201-211,431-503,905,941-943,951
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f0fba5a74efd30d0f8f0b63a2e31d88a8b631a1d",
+  "prompts": {},
+  "sessions": {
+    "s_f6da58639af786": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f832f-9523-77d0-bd77-990ed55808b0",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
