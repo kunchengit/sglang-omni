@@ -1,0 +1,67 @@
+sglang_omni/pipeline/weight_share.py
+  s_f6da58639af786::t_27438ff2e008d5 198,200
+sglang_omni/scheduling/types.py
+  s_f6da58639af786::t_2e6ed23c031c69 18
+  s_f6da58639af786::t_27438ff2e008d5 39-67
+tests/unit_test/llada2_uni/test_image_decoder.py
+  s_f6da58639af786::t_27438ff2e008d5 429,443,458,482-507
+sglang_omni/models/llada2_uni/components/decoder_model.py
+  s_f6da58639af786::t_27438ff2e008d5 172-178,246-267,269-277,279-293,310-316
+sglang_omni/models/llada2_uni/stages.py
+  s_f6da58639af786::t_27438ff2e008d5 12,280-285,289-298,306-311,334,368-372
+sglang_omni/pipeline/mp_runner.py
+  s_f6da58639af786::t_27438ff2e008d5 210,212,265,291-292,415,442,510-514,517-521,527-528,530-533,537-542,544-548,551,554-555,566-568
+sglang_omni/models/llada2_uni/components/decoder_runtime.py
+  s_f6da58639af786::t_27438ff2e008d5 6,11,18,29-33,38-43,95-96,98-106,108,112-118,133-199,256-261,276-310,327-333,364-367,379,381,383-384,406-407,418-420
+sglang_omni/config/topology.py
+  s_f6da58639af786::t_27438ff2e008d5 17,41-45,106-113,176,181,187-188,198-199,209,225,230,235,311,327,343-345,348,351,357,364-367,521,530
+docs/cookbook/llada2_uni.md
+  s_f6da58639af786::t_27438ff2e008d5 62-110
+sglang_omni/scheduling/simple_scheduler.py
+  s_f6da58639af786::t_27438ff2e008d5 27,46-49,103,106,109-129,328-337,342-345,449-454
+sglang_omni/models/llada2_uni/components/image_decoder.py
+  s_f6da58639af786::t_27438ff2e008d5 9,184-187,275,278,287-311,318-344,374-387
+sglang_omni/mps/decision.py
+  s_f6da58639af786::t_27438ff2e008d5 24,85,94,101-104,108,121
+sglang_omni/pipeline/tp_control.py
+  s_f6da58639af786::t_27438ff2e008d5 2,14,17,47,51-151,158,172,181-192,195,197,232,294,296
+sglang_omni/platforms/cuda.py
+  s_f6da58639af786::t_27438ff2e008d5 92-124
+tests/unit_test/pipeline/test_stage_sp.py
+  s_f6da58639af786::t_27438ff2e008d5 1-584
+sglang_omni/pipeline/stage/runtime.py
+  s_f6da58639af786::t_27438ff2e008d5 40-41,136-137,180-214,245-246,456-457,466,546-550,1306-1308,1310-1318,1344-1352,1407,1509-1516,1518-1522,1596-1599,1725-1728,2727-2733,2738-2745,2747-2755,2758,2764-2767,2785-2797,2801-2805,2869
+  s_f6da58639af786::t_2e6ed23c031c69 77
+sglang_omni/config/schema.py
+  s_f6da58639af786::t_27438ff2e008d5 70,73,86-96,438-439,448,488-495,504,530-542,544-545,550,552-553,559-560,602,604,612,614-615,1302,1328-1329,1332-1333,1340-1341
+sglang_omni/config/placement.py
+  s_f6da58639af786::t_27438ff2e008d5 23,88,201,228-238,244,246-247,255,257-258
+sglang_omni/models/llada2_uni/config.py
+  s_f6da58639af786::t_27438ff2e008d5 41-42,47,52-75,84
+sglang_omni/pipeline/replicas.py
+  s_f6da58639af786::t_27438ff2e008d5 258
+sglang_omni/pipeline/stage_workers.py
+  s_f6da58639af786::t_27438ff2e008d5 161-174,223,239,252-257,783-786,989,1068,1070-1072,1247-1248,1413-1417
+sglang_omni/mps/runtime.py
+  s_f6da58639af786::t_27438ff2e008d5 92,97
+sglang_omni/platforms/interface.py
+  s_f6da58639af786::t_27438ff2e008d5 137-143
+tests/unit_test/llada2_uni/test_decoder_runtime.py
+  s_f6da58639af786::t_27438ff2e008d5 11-12,17-82,177-188,222-292
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "57e0933d7a560ebe1948a684e4e866f0de80f951",
+  "prompts": {},
+  "sessions": {
+    "s_f6da58639af786": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f832f-9523-77d0-bd77-990ed55808b0",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
