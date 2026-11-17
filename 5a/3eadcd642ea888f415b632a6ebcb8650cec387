@@ -1,0 +1,21 @@
+sglang_omni/scheduling/types.py
+  s_f6da58639af786::t_0d430f21a2cfe6 71-73,75-77
+sglang_omni/pipeline/stage/runtime.py
+  s_f6da58639af786::t_0d430f21a2cfe6 187-192,222-227
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "5a3eadcd642ea888f415b632a6ebcb8650cec387",
+  "prompts": {},
+  "sessions": {
+    "s_f6da58639af786": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f832f-9523-77d0-bd77-990ed55808b0",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
