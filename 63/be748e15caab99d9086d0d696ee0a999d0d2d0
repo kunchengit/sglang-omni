@@ -1,0 +1,30 @@
+sglang_omni/models/llada2_uni/native_sp.py
+  s_f6da58639af786::t_b1612458e60fea 1-62
+sglang_omni/models/llada2_uni/components/decoder_runtime.py
+  s_f6da58639af786::t_ee52944a25860b 18-37,103
+sglang_omni/models/llada2_uni/native_sp_host.py
+  s_f6da58639af786::t_b1612458e60fea 1-21,23-40
+  s_f6da58639af786::t_e494c967dd90b9 22
+sglang_omni/models/llada2_uni/stages.py
+  s_f6da58639af786::t_e494c967dd90b9 279,284-293,304,384-385
+sglang_omni/models/llada2_uni/components/decoder_model.py
+  s_f6da58639af786::t_cc051da511986e 119,165-171,199-204,241-256,258,261,267,272-276,278-281
+sglang_omni/models/llada2_uni/components/image_decoder.py
+  s_f6da58639af786::t_b18929e0da1677 8,184-187,275,278,287-311,318-346,376-392
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "63be748e15caab99d9086d0d696ee0a999d0d2d0",
+  "prompts": {},
+  "sessions": {
+    "s_f6da58639af786": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f832f-9523-77d0-bd77-990ed55808b0",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
