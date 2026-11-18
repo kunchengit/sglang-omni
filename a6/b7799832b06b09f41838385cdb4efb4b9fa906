@@ -1,0 +1,24 @@
+sglang_omni/models/llada2_uni/config.py
+  s_f6da58639af786::t_da1b710e430d77 161-168,170-173,176,180
+tests/unit_test/llada2_uni/test_image_decoder.py
+  s_f6da58639af786::t_64625a14ee5171 126-136
+sglang_omni/models/llada2_uni/native_sp_host.py
+  s_f6da58639af786::t_da1b710e430d77 30-32,92,100-103,106
+  s_f6da58639af786::t_bf03437ae1fc7c 22-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a6b7799832b06b09f41838385cdb4efb4b9fa906",
+  "prompts": {},
+  "sessions": {
+    "s_f6da58639af786": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f832f-9523-77d0-bd77-990ed55808b0",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
