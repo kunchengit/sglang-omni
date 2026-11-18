@@ -1,0 +1,21 @@
+sglang_omni/models/llada2_uni/components/decoder_model.py
+  s_f6da58639af786::t_4c0ec55f4ac074 199-204
+docs/cookbook/llada2_uni.md
+  s_f6da58639af786::t_01af2438cf5543 81
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "48f992336edfad0c33088fd70840389793f0d995",
+  "prompts": {},
+  "sessions": {
+    "s_f6da58639af786": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f832f-9523-77d0-bd77-990ed55808b0",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
