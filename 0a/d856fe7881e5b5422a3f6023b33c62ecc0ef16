@@ -1,0 +1,19 @@
+sglang_omni/models/llada2_uni/stages.py
+  s_f6da58639af786::t_77f7569ca40cb6 385-387,392-393
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "0ad856fe7881e5b5422a3f6023b33c62ecc0ef16",
+  "prompts": {},
+  "sessions": {
+    "s_f6da58639af786": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f832f-9523-77d0-bd77-990ed55808b0",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
