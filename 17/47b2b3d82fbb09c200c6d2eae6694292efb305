@@ -1,0 +1,25 @@
+sglang_omni/models/llada2_uni/native_sp_host.py
+  s_f6da58639af786::t_f159bf771f06f7 93,95-97
+  s_f6da58639af786::t_bf03437ae1fc7c 22-24
+  s_f6da58639af786::t_da1b710e430d77 30-32,92,103-106,109
+tests/unit_test/llada2_uni/test_image_decoder.py
+  s_f6da58639af786::t_64625a14ee5171 127-137
+sglang_omni/models/llada2_uni/config.py
+  s_f6da58639af786::t_da1b710e430d77 294-301,303-306,309,313
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "1747b2b3d82fbb09c200c6d2eae6694292efb305",
+  "prompts": {},
+  "sessions": {
+    "s_f6da58639af786": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f832f-9523-77d0-bd77-990ed55808b0",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": null
+    }
+  }
+}
