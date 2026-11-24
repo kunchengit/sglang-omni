@@ -12,6 +12,7 @@ sglang_omni/models/llada2_uni/components/decoder_runtime.py
   s_f6da58639af786::t_4d410a4d27b142 30-31,101
 sglang_omni/models/llada2_uni/components/image_decoder.py
   s_f6da58639af786::t_ad7c4f913be3f2 309-320,327-329,340-345,383-384,394-395
+  s_f6da58639af786::t_e703777dc924f0 330-332,334-339,385-393
 sglang_omni/models/llada2_uni/stages.py
   s_f6da58639af786::t_7e7ef4eedb5668 430
   s_f6da58639af786::t_b76ff2f08fec3b 10,335,346,364-390,429,456
