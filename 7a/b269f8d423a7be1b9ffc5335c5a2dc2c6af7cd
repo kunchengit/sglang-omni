@@ -1,0 +1,48 @@
+sglang_omni/models/llada2_uni/config.py
+  s_f6da58639af786::t_9665878ba7ad58 244,280-282,302,307-308,310-312,314-316,318-327,419
+  s_f6da58639af786::t_d018d2e31746bb 317
+  s_f6da58639af786::t_da1b710e430d77 294-301,303-306,309,313
+sglang_omni/models/llada2_uni/native_sp_host.py
+  s_f6da58639af786::t_d0b2e3f6b308f8 1,42-49,51,53-62,64-71,75-76
+  s_f6da58639af786::t_d66c3479b01a87 14-15,17-18,80-90,93-99,104-105,107-115
+  s_f6da58639af786::t_8f7cca9e9bb45e 5,25-29,33-38,50,91
+  s_f6da58639af786::t_da1b710e430d77 30-32,92,100-103,106
+  s_f6da58639af786::t_bf03437ae1fc7c 22-24
+examples/configs/llada2_uni_native_sp2.yaml
+  s_f6da58639af786::t_6787bd291643f2 1
+  s_f6da58639af786::t_634d29032cee81 2-6
+sglang_omni/models/llada2_uni/components/decoder_runtime.py
+  s_f6da58639af786::t_4d410a4d27b142 30-31,101
+sglang_omni/models/llada2_uni/components/image_decoder.py
+  s_f6da58639af786::t_ad7c4f913be3f2 309-320,327-329,340-345,383-384,394-395
+  s_f6da58639af786::t_e703777dc924f0 330-332,334-339,385-393
+sglang_omni/models/llada2_uni/stages.py
+  s_f6da58639af786::t_7e7ef4eedb5668 434
+  s_f6da58639af786::t_b76ff2f08fec3b 10,335,346,364-384,388-391,394,433,460
+  s_f6da58639af786::t_77f7569ca40cb6 385-387,392-393
+sglang_omni/models/llada2_uni/components/decoder_model.py
+  s_f6da58639af786::t_1e2c0c0b1f72c0 241-246,248-256
+sglang_omni/models/llada2_uni/native_sp.py
+  s_f6da58639af786::t_8de49683fd28fd 1,11-13,17,19,21-23,31-37,39,43-50,55-57,60-61,70,73-75,77
+  s_f6da58639af786::t_3136db14df5b97 38,69,71,76,84-90
+tests/unit_test/llada2_uni/test_image_decoder.py
+  s_f6da58639af786::t_1a52eef93eecf0 116,121-126,138-139
+  s_f6da58639af786::t_e0842eb7bac563 117-120
+  s_f6da58639af786::t_64625a14ee5171 127-137
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "7ab269f8d423a7be1b9ffc5335c5a2dc2c6af7cd",
+  "prompts": {},
+  "sessions": {
+    "s_f6da58639af786": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f832f-9523-77d0-bd77-990ed55808b0",
+        "model": "gpt-6.2-astra"
+      },
+      "human_author": "Anmuliar <29586637+Anmuliar@users.noreply.github.com>"
+    }
+  }
+}
