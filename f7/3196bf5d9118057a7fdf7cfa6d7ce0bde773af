@@ -11,6 +11,7 @@ sglang_omni/models/llada2_uni/components/decoder_model.py
   s_f6da58639af786::t_cc051da511986e 119,165-171,199-204,241-256,258,261,267,272-276,278-281
 sglang_omni/models/llada2_uni/components/image_decoder.py
   s_f6da58639af786::t_b18929e0da1677 206-209,297,300,309-333,340-347,358-369,400-405,415-417
+  s_f6da58639af786::t_4bb0682e8ec9ad 348-357,406-414
 ---
 {
   "schema_version": "authorship/3.0.0",
